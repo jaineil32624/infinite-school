@@ -1,0 +1,31 @@
+# Commits the VT323 font (SIL Open Font License) into the repo so the game
+# looks right offline and inside the Android app.
+name: Vendor fonts
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  fonts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download fonts if missing
+        id: dl
+        run: |
+          mkdir -p assets/fonts
+          if [ ! -f assets/fonts/VT323-Regular.ttf ]; then
+            curl -fsSL -o assets/fonts/VT323-Regular.ttf https://github.com/google/fonts/raw/main/ofl/vt323/VT323-Regular.ttf
+            curl -fsSL -o assets/fonts/OFL-VT323.txt https://github.com/google/fonts/raw/main/ofl/vt323/OFL.txt
+            echo "changed=1" >> $GITHUB_OUTPUT
+          fi
+      - name: Commit
+        if: steps.dl.outputs.changed == '1'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add assets/fonts
+          git commit -m "Vendor VT323 font (OFL)"
+          git push

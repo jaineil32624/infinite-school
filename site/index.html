@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Infinite School</title>
+<meta name="description" content="A pixel-art time-loop mystery RPG. Thursday never ends.">
+<meta property="og:title" content="Infinite School">
+<meta property="og:description" content="A pixel-art time-loop mystery RPG. Thursday never ends.">
+<meta property="og:image" content="img/title.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&family=VT323&display=swap">
+<style>
+  /* Layout: one centered column like a hallway — hero, actions, screenshots, features, footer */
+  @font-face { font-family: 'VT323 Local'; src: url('play/assets/fonts/VT323-Regular.ttf') format('truetype'); font-display: swap; }
+  :root {
+    --night: #0c0a16; --wall: #1d1430; --chalk: #f1e9d2; --dust: #a49ab4; --brass: #e8b84a; --bell: #e0675d; --spring: #7fd3dc;
+    --display: 'Silkscreen', 'VT323', monospace; --body: 'VT323', 'VT323 Local', 'Courier New', monospace;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--night); }
+  body { margin: 0; background: radial-gradient(ellipse at 50% -10%, #2a1d44 0%, var(--night) 60%) fixed; color: var(--chalk); font: 22px/1.35 var(--body);
+    padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  body::after { content: ''; position: fixed; inset: 0; pointer-events: none; background: repeating-linear-gradient(0deg, rgba(0,0,0,.18) 0 1px, transparent 1px 3px); }
+  main { max-width: 980px; margin: 0 auto; padding-block: 56px 40px; }
+  a { color: var(--brass); }
+  .eyebrow { color: var(--dust); letter-spacing: .25em; text-transform: uppercase; font-size: 18px; text-align: center; }
+  h1 { font: 700 clamp(44px, 11vw, 104px)/0.95 var(--display); margin: 10px 0 0; text-align: center; letter-spacing: .02em; position: relative; text-wrap: balance; }
+  h1 span { display: block; color: var(--brass); font-size: .42em; letter-spacing: .5em; margin-top: 14px; padding-left: .5em; }
+  .glitch { animation: jitter 6s infinite steps(1); text-shadow: 2px 0 rgba(224,103,93,.55), -2px 0 rgba(127,211,220,.55); }
+  @keyframes jitter { 0%, 91%, 100% { transform: none; } 92% { transform: translate(3px, -1px) skewX(4deg); } 93% { transform: translate(-4px, 1px); } 94% { transform: none; } }
+  .type { min-height: 2.8em; margin: 26px auto 0; max-width: 34ch; text-align: center; font-size: 26px; color: var(--chalk); }
+  .type .cur { display: inline-block; width: .55em; background: var(--brass); animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .clock { text-align: center; color: var(--bell); font-size: 20px; margin-top: 6px; font-variant-numeric: tabular-nums; }
+  .actions { display: flex; flex-wrap: wrap; gap: 14px; justify-content: center; margin-top: 30px; }
+  .btn { display: inline-flex; align-items: center; gap: 10px; padding: 12px 22px; font: 400 18px var(--display); text-decoration: none; border: 2px solid var(--chalk); color: var(--chalk);
+    box-shadow: 4px 4px 0 #000; transition: transform .08s, box-shadow .08s, background .2s; }
+  .btn:hover, .btn:focus-visible { transform: translate(-2px, -2px); box-shadow: 6px 6px 0 #000; outline: none; }
+  .btn:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 #000; }
+  .btn.primary { background: var(--brass); color: var(--night); border-color: var(--brass); }
+  .btn.android { border-color: var(--spring); color: var(--spring); }
+  .note { text-align: center; color: var(--dust); font-size: 18px; margin-top: 12px; }
+  h2 { font: 700 26px var(--display); margin: 70px 0 18px; color: var(--brass); }
+  h2::before { content: '> '; color: var(--dust); }
+  .shots { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+  .shots figure { margin: 0; border: 2px solid #3a2f52; background: #000; box-shadow: 4px 4px 0 #000; overflow: hidden; }
+  .shots img { display: block; width: 100%; height: auto; image-rendering: pixelated; transition: transform .4s; }
+  .shots figure:hover img { transform: scale(1.04); }
+  .shots figcaption { padding: 8px 12px; color: var(--dust); font-size: 18px; border-top: 2px solid #3a2f52; }
+  .shots figure.wide { grid-column: 1 / -1; }
+  .features { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px 26px; }
+  .feature b { display: block; color: var(--chalk); font: 700 16px var(--display); margin-bottom: 4px; }
+  .feature p { margin: 0; color: var(--dust); font-size: 20px; }
+  .reveal { opacity: 1; transform: none; }
+  .js .reveal { animation: rise .7s both; }
+  @keyframes rise { from { opacity: 0; transform: translateY(14px); } }
+  .ticker { margin-top: 64px; overflow: hidden; border-block: 2px solid #3a2f52; padding-block: 8px; color: var(--dust); white-space: nowrap; }
+  .ticker div { display: inline-block; animation: scroll 38s linear infinite; }
+  @keyframes scroll { to { transform: translateX(-50%); } }
+  footer { text-align: center; color: var(--dust); font-size: 18px; margin-top: 40px; }
+  @media (max-width: 720px) { .shots, .features { grid-template-columns: 1fr; } body { font-size: 20px; } .type { font-size: 22px; } }
+  @media (prefers-reduced-motion: reduce) { .glitch, .ticker div, .type .cur, .js .reveal { animation: none; } }
+</style>
+</head>
+<body>
+<main>
+  <div class="eyebrow">Halloway Academy · Thursday, October 13</div>
+  <h1 class="glitch">INFINITE<span>SCHOOL</span></h1>
+  <p class="type" aria-live="polite"><span id="typed">Thursday never ends.</span><span class="cur">&nbsp;</span></p>
+  <div class="clock" id="clock">11:59:59 PM</div>
+
+  <div class="actions">
+    <a class="btn primary" href="play/">▶ Play in browser</a>
+    <a class="btn android" href="https://github.com/jaineil32624/infinite-school/releases/latest/download/infinite-school.apk">⬇ Android APK</a>
+    <a class="btn" href="https://github.com/jaineil32624/infinite-school">GitHub</a>
+  </div>
+  <p class="note">Android: open the APK and allow "install unknown apps" for your browser when asked.<br>Works with keyboard, controller or touch.</p>
+
+  <h2>Screenshots</h2>
+  <div class="shots">
+    <figure class="wide reveal"><img src="img/room2f.png" alt="A see-through boy waits in the sealed classroom 2-F at night" loading="lazy"><figcaption>Room 2-F has been sealed since 1977. Someone is still waiting inside.</figcaption></figure>
+    <figure class="reveal"><img src="img/classroom.png" alt="Mira talks to the player in classroom 2-B" loading="lazy"><figcaption>Mira, your seatmate. She doesn't remember yesterday.</figcaption></figure>
+    <figure class="reveal"><img src="img/notebook.png" alt="The notebook evidence board with clues" loading="lazy"><figcaption>Connect clues on the evidence board to make deductions.</figcaption></figure>
+    <figure class="reveal"><img src="img/hall.png" alt="The second floor hallway in golden afternoon light" loading="lazy"><figcaption>2-E, then a blank wall, then 2-G.</figcaption></figure>
+    <figure class="reveal"><img src="img/stillwell.png" alt="A dark chamber with a perfectly still spring" loading="lazy"><figcaption>Something under the school is holding its breath.</figcaption></figure>
+  </div>
+
+  <h2>What's inside</h2>
+  <div class="features">
+    <div class="feature reveal"><b>The loop</b><p>A real clock runs from 7:45 AM to midnight. Then the bell rings and it's Thursday again. What you learn survives.</p></div>
+    <div class="feature reveal"><b>Evidence board</b><p>28 clues and 6 deductions. Pin two clues together to open hidden rooms and change the story.</p></div>
+    <div class="feature reveal"><b>People who forget</b><p>13 characters with daily schedules. Friendships reset each loop, but your insight into them doesn't.</p></div>
+    <div class="feature reveal"><b>Multiple endings</b><p>3 endings in Chapter One, 4 more planned. Some are kind. Some aren't.</p></div>
+    <div class="feature reveal"><b>Original soundtrack</b><p>9 chiptune themes generated live, all variations of one bell motif.</p></div>
+    <div class="feature reveal"><b>Play your way</b><p>Saves, controller, touch, large text, readable font, high contrast, relaxed clock, reduced effects.</p></div>
+  </div>
+
+  <div class="ticker" aria-hidden="true"><div>DON'T TRUST THE BELL ✦ F.B. IS STILL HERE ✦ WHERE IS 2-F? ✦ CLAIMED BY: NO ONE ✦ THE BELLWETHER HOLDS ✦ POSTPONED ✦ MYSTERY MEAT THURSDAY ✦ IT IS ALWAYS THURSDAY ✦ DON'T TRUST THE BELL ✦ F.B. IS STILL HERE ✦ WHERE IS 2-F? ✦ CLAIMED BY: NO ONE ✦ THE BELLWETHER HOLDS ✦ POSTPONED ✦ MYSTERY MEAT THURSDAY ✦ IT IS ALWAYS THURSDAY ✦&nbsp;</div></div>
+
+  <footer>Chapter One: Homeroom · Made by Jaineil Rana · All story, art and music original</footer>
+</main>
+<script>
+  document.documentElement.classList.add('js');
+  // typewriter cycling through lines from the game
+  const lines = ['Thursday never ends.', 'You wake up at your desk. Again.', 'Everyone forgets. Except you.', 'Every teacher has a secret.', "There is no room 2-F. So who is inside it?", 'Connect the clues. Break the loop. Or stay forever.'];
+  const el = document.getElementById('typed');
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let li = 0, ci = lines[0].length, del = true;
+  function tick() {
+    const l = lines[li];
+    if (del) { ci--; if (ci <= 0) { del = false; li = (li + 1) % lines.length; } }
+    else { ci++; if (ci >= lines[li].length) { del = true; el.textContent = lines[li]; return setTimeout(tick, 2200); } }
+    el.textContent = lines[li].slice(0, Math.max(0, ci)) || ' ';
+    setTimeout(tick, del ? 28 : 55 + Math.random() * 40);
+  }
+  if (!reduce) setTimeout(tick, 2200);
+  // a clock that never reaches midnight
+  const clock = document.getElementById('clock');
+  let s = 50;
+  setInterval(() => { s = s >= 59 ? 50 : s + 1; clock.textContent = '11:59:' + s + ' PM'; }, 1000);
+</script>
+</body>
+</html>

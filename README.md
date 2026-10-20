@@ -1,6 +1,18 @@
-# Infinite School
+<p align="center">
+  <img src="site/img/title.png" alt="Infinite School title screen" width="720">
+</p>
 
-*Thursday never ends.*
+<p align="center">
+  <a href="https://jaineil32624.github.io/infinite-school/"><img src="https://readme-typing-svg.demolab.com?font=VT323&size=30&duration=2800&pause=900&color=E8B84A&center=true&vCenter=true&width=720&lines=Thursday+never+ends.;You+wake+up+at+your+desk.+Again.;Everyone+forgets.+Except+you.;Every+teacher+has+a+secret.;There+is+no+room+2-F.+So+who+is+inside%3F" alt="Thursday never ends."></a>
+</p>
+
+<p align="center">
+  <a href="https://jaineil32624.github.io/infinite-school/play/"><b>▶ Play in your browser</b></a> ·
+  <a href="https://github.com/jaineil32624/infinite-school/releases/latest/download/infinite-school.apk"><b>⬇ Download Android APK</b></a> ·
+  <a href="https://jaineil32624.github.io/infinite-school/">Website</a>
+</p>
+
+# Infinite School
 
 A pixel-art mystery RPG about a school day that keeps repeating. You wake up at your desk in Classroom 2-B on Thursday, October 13, the last day before Halloway Academy closes forever. At midnight the bell rings and the day starts over. Everyone forgets. You don't.
 
@@ -8,7 +20,9 @@ Inspired by the emotional storytelling of Undertale, the social links of Persona
 
 ## Play
 
-- **Easiest:** open `dist/infinite-school.html` in any browser (one self-contained file, works offline).
+- **Web:** https://jaineil32624.github.io/infinite-school/play/
+- **Android:** download the [latest APK](https://github.com/jaineil32624/infinite-school/releases/latest/download/infinite-school.apk), open it, and allow installs from your browser when asked. A GitHub Action rebuilds it on every push.
+- **Offline:** open `dist/infinite-school.html` in any browser (one self-contained file).
 - **Dev:** serve the folder (`npx serve .` or `python -m http.server`) and open `index.html`.
 
 ### Controls
@@ -23,6 +37,13 @@ Inspired by the emotional storytelling of Undertale, the social links of Persona
 | Pause | Esc / P | Start |
 
 Touch controls appear automatically on phones and tablets.
+
+## Screenshots
+
+| | |
+|---|---|
+| ![Room 2-F at night](site/img/room2f.png) | ![Mira in classroom 2-B](site/img/classroom.png) |
+| ![Evidence board](site/img/notebook.png) | ![The Stillwell](site/img/stillwell.png) |
 
 ## What's in Chapter One: Homeroom
 
