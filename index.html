@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Infinite School</title>
+<meta name="description" content="A pixel-art mystery RPG about a school day that will not end.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=VT323&display=swap">
+<style>
+  :root { color-scheme: dark; --bg: #05040a; --ink: #f1e9d2; --btn: rgba(241,233,210,0.12); --btn-on: rgba(232,184,74,0.45); }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; touch-action: none; -webkit-user-select: none; user-select: none; }
+  #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; image-rendering: pixelated; }
+  #touch { position: fixed; inset: auto 0 0 0; height: 0; pointer-events: none; }
+  #touch .pad, #touch .btns { position: fixed; bottom: calc(18px + env(safe-area-inset-bottom, 0px)); pointer-events: auto; }
+  #touch .pad { left: calc(18px + env(safe-area-inset-left, 0px)); width: 132px; height: 132px; }
+  #touch .btns { right: calc(18px + env(safe-area-inset-right, 0px)); width: 150px; height: 132px; }
+  #touch button { position: absolute; border: 1px solid rgba(241,233,210,0.35); background: var(--btn); color: var(--ink);
+    font: 18px VT323, monospace; border-radius: 10px; touch-action: none; }
+  #touch button.on { background: var(--btn-on); }
+  #touch .u { left: 44px; top: 0; width: 44px; height: 44px; } #touch .d { left: 44px; top: 88px; width: 44px; height: 44px; }
+  #touch .l { left: 0; top: 44px; width: 44px; height: 44px; } #touch .r { left: 88px; top: 44px; width: 44px; height: 44px; }
+  #touch .a { right: 0; top: 40px; width: 58px; height: 58px; border-radius: 50%; } #touch .b { right: 70px; top: 74px; width: 50px; height: 50px; border-radius: 50%; }
+  #touch .n { right: 70px; top: 0; width: 50px; height: 30px; font-size: 14px; } #touch .m { right: 4px; top: 0; width: 50px; height: 30px; font-size: 14px; }
+  #touch .run { left: 140px; top: 88px; width: 52px; height: 44px; font-size: 14px; }
+  noscript { color: var(--ink); font: 20px VT323, monospace; position: fixed; inset: 40% 0 auto; text-align: center; }
+</style>
+</head>
+<body>
+<canvas id="game" aria-label="Infinite School game screen"></canvas>
+<div id="touch" hidden>
+  <div class="pad">
+    <button class="u" data-act="up" aria-label="Up">▲</button><button class="d" data-act="down" aria-label="Down">▼</button>
+    <button class="l" data-act="left" aria-label="Left">◀</button><button class="r" data-act="right" aria-label="Right">▶</button>
+    <button class="run" data-act="run" aria-label="Run">RUN</button>
+  </div>
+  <div class="btns">
+    <button class="n" data-act="note" aria-label="Notebook">NOTE</button><button class="m" data-act="menu" aria-label="Menu">MENU</button>
+    <button class="b" data-act="back" aria-label="Back">B</button><button class="a" data-act="ok" aria-label="OK">A</button>
+  </div>
+</div>
+<noscript>Infinite School needs JavaScript to run.</noscript>
+<!-- engine -->
+<script src="src/core.js"></script>
+<script src="src/input.js"></script>
+<script src="src/audio.js"></script>
+<script src="src/art.js"></script>
+<script src="src/state.js"></script>
+<script src="src/world.js"></script>
+<script src="src/ui.js"></script>
+<!-- content -->
+<script src="data/world.js"></script>
+<script src="data/rooms.js"></script>
+<script src="data/npcs.js"></script>
+<script src="data/story.js"></script>
+<script src="data/meta.js"></script>
+<script src="data/music.js"></script>
+<!-- boot -->
+<script src="src/main.js"></script>
+</body>
+</html>

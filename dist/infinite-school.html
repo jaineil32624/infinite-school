@@ -1,0 +1,3127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Infinite School</title>
+<meta name="description" content="A pixel-art mystery RPG about a school day that will not end.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=VT323&display=swap">
+<style>
+  :root { color-scheme: dark; --bg: #05040a; --ink: #f1e9d2; --btn: rgba(241,233,210,0.12); --btn-on: rgba(232,184,74,0.45); }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; touch-action: none; -webkit-user-select: none; user-select: none; }
+  #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; image-rendering: pixelated; }
+  #touch { position: fixed; inset: auto 0 0 0; height: 0; pointer-events: none; }
+  #touch .pad, #touch .btns { position: fixed; bottom: calc(18px + env(safe-area-inset-bottom, 0px)); pointer-events: auto; }
+  #touch .pad { left: calc(18px + env(safe-area-inset-left, 0px)); width: 132px; height: 132px; }
+  #touch .btns { right: calc(18px + env(safe-area-inset-right, 0px)); width: 150px; height: 132px; }
+  #touch button { position: absolute; border: 1px solid rgba(241,233,210,0.35); background: var(--btn); color: var(--ink);
+    font: 18px VT323, monospace; border-radius: 10px; touch-action: none; }
+  #touch button.on { background: var(--btn-on); }
+  #touch .u { left: 44px; top: 0; width: 44px; height: 44px; } #touch .d { left: 44px; top: 88px; width: 44px; height: 44px; }
+  #touch .l { left: 0; top: 44px; width: 44px; height: 44px; } #touch .r { left: 88px; top: 44px; width: 44px; height: 44px; }
+  #touch .a { right: 0; top: 40px; width: 58px; height: 58px; border-radius: 50%; } #touch .b { right: 70px; top: 74px; width: 50px; height: 50px; border-radius: 50%; }
+  #touch .n { right: 70px; top: 0; width: 50px; height: 30px; font-size: 14px; } #touch .m { right: 4px; top: 0; width: 50px; height: 30px; font-size: 14px; }
+  #touch .run { left: 140px; top: 88px; width: 52px; height: 44px; font-size: 14px; }
+  noscript { color: var(--ink); font: 20px VT323, monospace; position: fixed; inset: 40% 0 auto; text-align: center; }
+</style>
+</head>
+<body>
+<canvas id="game" aria-label="Infinite School game screen"></canvas>
+<div id="touch" hidden>
+  <div class="pad">
+    <button class="u" data-act="up" aria-label="Up">▲</button><button class="d" data-act="down" aria-label="Down">▼</button>
+    <button class="l" data-act="left" aria-label="Left">◀</button><button class="r" data-act="right" aria-label="Right">▶</button>
+    <button class="run" data-act="run" aria-label="Run">RUN</button>
+  </div>
+  <div class="btns">
+    <button class="n" data-act="note" aria-label="Notebook">NOTE</button><button class="m" data-act="menu" aria-label="Menu">MENU</button>
+    <button class="b" data-act="back" aria-label="Back">B</button><button class="a" data-act="ok" aria-label="OK">A</button>
+  </div>
+</div>
+<noscript>Infinite School needs JavaScript to run.</noscript>
+<!-- engine -->
+<script>/* src/core.js */
+// Infinite School — core namespace, constants and small utilities.
+// Every module attaches itself to the global IS object so the game runs
+// from file:// with plain <script> tags (no bundler required).
+window.IS = window.IS || {};
+(function (IS) {
+  IS.VERSION = '0.1.0-ch1';
+  IS.W = 320; IS.H = 180; IS.T = 16;
+  IS.DAY_START = 465;   // 7:45 AM
+  IS.DAY_END = 1440;    // midnight
+
+  IS.clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+  IS.lerp = (a, b, t) => a + (b - a) * t;
+
+  IS.hash = function (str) {
+    let h = 2166136261;
+    str = String(str);
+    for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
+    return h >>> 0;
+  };
+  // xorshift PRNG — deterministic per seed so loops vary but are reproducible
+  IS.rng = function (seed) {
+    let s = (seed >>> 0) || 1;
+    return function () { s ^= s << 13; s >>>= 0; s ^= s >> 17; s ^= s << 5; s >>>= 0; return s / 4294967296; };
+  };
+  IS.loopRand = (key) => IS.rng(IS.hash(key) + (IS.S ? IS.S.loop : 1) * 7919)();
+
+  IS.fmtTime = function (m) {
+    m = Math.floor(m);
+    const h = Math.floor(m / 60) % 24, mm = m % 60;
+    let hh = h % 12; if (hh === 0) hh = 12;
+    return hh + ':' + String(mm).padStart(2, '0') + (h >= 12 ? ' PM' : ' AM');
+  };
+
+  IS.store = {
+    get(k, d) { try { const v = localStorage.getItem('infschool.' + k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
+    set(k, v) { try { localStorage.setItem('infschool.' + k, JSON.stringify(v)); } catch (e) {} },
+    del(k) { try { localStorage.removeItem('infschool.' + k); } catch (e) {} }
+  };
+
+  // Content registry. data/*.js files fill these in.
+  IS.data = {
+    rooms: {}, npcs: {}, speakers: {}, dialogue: {}, scenes: {}, clues: {}, deductions: [],
+    items: {}, achievements: [], endings: {}, music: {}, phases: {}, objectives: [],
+    loopRules: [], books: [], periods: [], bells: []
+  };
+
+  // Scene stack
+  IS.stack = [];
+  IS.push = (s) => { IS.stack.push(s); s.enter && s.enter(); };
+  IS.pop = () => { const s = IS.stack.pop(); s && s.exit && s.exit(); return s; };
+  IS.top = () => IS.stack[IS.stack.length - 1];
+  IS.replaceAll = (s) => { while (IS.stack.length) IS.pop(); IS.push(s); };
+})(window.IS);
+
+</script>
+<script>/* src/input.js */
+// Unified input: keyboard, gamepad (standard mapping) and touch buttons.
+// Game code only ever asks about abstract actions: up/down/left/right/ok/back/menu/note/run.
+(function (IS) {
+  const KEYS = {
+    ArrowUp: 'up', KeyW: 'up', ArrowDown: 'down', KeyS: 'down', ArrowLeft: 'left', KeyA: 'left',
+    ArrowRight: 'right', KeyD: 'right', KeyZ: 'ok', Enter: 'ok', Space: 'ok', KeyE: 'ok',
+    KeyX: 'back', Backspace: 'back', Escape: 'menu', KeyP: 'menu', KeyN: 'note', KeyC: 'note', Tab: 'note',
+    ShiftLeft: 'run', ShiftRight: 'run'
+  };
+  const PAD = { 0: 'ok', 1: 'back', 2: 'run', 3: 'note', 9: 'menu', 8: 'note', 12: 'up', 13: 'down', 14: 'left', 15: 'right' };
+  const ACTIONS = ['up', 'down', 'left', 'right', 'ok', 'back', 'menu', 'note', 'run'];
+
+  const I = { held: {}, pressed: {}, typed: [], mode: 'keys', repT: {} };
+  const kb = {}, pad = {}, touch = {}, latch = {};
+  I.textMode = false;
+  let prev = {};
+
+  addEventListener('keydown', (e) => {
+    let a = KEYS[e.code];
+    if (e.key && e.key.length === 1) I.typed.push(e.key);
+    if (e.code === 'Backspace') I.typed.push('\b');
+    // while typing a name, letters are letters, not actions
+    if (I.textMode && (e.code === 'Backspace' || (e.key && e.key.length === 1 && e.code !== 'Space'))) a = null;
+    if (a) { if (!e.repeat) latch[a] = true; kb[a] = true; e.preventDefault(); }
+    I.mode = 'keys';
+    IS.A && IS.A.unlock();
+  });
+  addEventListener('keyup', (e) => { const a = KEYS[e.code]; if (a) kb[a] = false; });
+  addEventListener('blur', () => { for (const k in kb) kb[k] = false; });
+  addEventListener('pointerdown', () => { IS.A && IS.A.unlock(); }, { passive: true });
+
+  I.bindTouch = function (root) {
+    root.querySelectorAll('[data-act]').forEach((el) => {
+      const a = el.dataset.act;
+      const on = (e) => { e.preventDefault(); touch[a] = true; el.classList.add('on'); I.mode = 'touch'; IS.A && IS.A.unlock(); };
+      const off = (e) => { e.preventDefault(); touch[a] = false; el.classList.remove('on'); };
+      el.addEventListener('pointerdown', on); el.addEventListener('pointerup', off);
+      el.addEventListener('pointercancel', off); el.addEventListener('pointerleave', off);
+    });
+  };
+
+  function pollPad() {
+    for (const k in pad) pad[k] = false;
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    for (const g of pads) {
+      if (!g) continue;
+      g.buttons.forEach((b, i) => { if (b.pressed && PAD[i]) { pad[PAD[i]] = true; I.mode = 'pad'; } });
+      const ax = g.axes[0] || 0, ay = g.axes[1] || 0;
+      if (ax < -0.5) pad.left = true; if (ax > 0.5) pad.right = true;
+      if (ay < -0.5) pad.up = true; if (ay > 0.5) pad.down = true;
+      if (g.buttons[7] && g.buttons[7].value > 0.5) pad.run = true; // RT also runs
+    }
+  }
+
+  I.update = function (dt) {
+    pollPad();
+    for (const a of ACTIONS) {
+      const h = !!(kb[a] || pad[a] || touch[a]);
+      if (latch[a] && !prev[a]) { I.pressed[a] = true; I.held[a] = true; prev[a] = true; latch[a] = false; I.repT[a] = h ? (I.repT[a] || 0) + dt : 0; continue; }
+      latch[a] = false;
+      I.pressed[a] = h && !prev[a];
+      I.held[a] = h;
+      prev[a] = h;
+      // menu-style auto repeat
+      if (h) I.repT[a] = (I.repT[a] || 0) + dt; else I.repT[a] = 0;
+    }
+  };
+  // true on first press, then repeatedly while held (for menus)
+  I.rep = function (a) {
+    if (I.pressed[a]) return true;
+    const t = I.repT[a] || 0;
+    if (t > 0.38) { I.repT[a] -= 0.09; return true; }
+    return false;
+  };
+  I.back = () => I.pressed.back || I.pressed.menu;
+  I.clear = () => { for (const a of ACTIONS) { I.pressed[a] = false; } I.typed.length = 0; };
+
+  IS.I = I;
+})(window.IS);
+
+</script>
+<script>/* src/audio.js */
+// Procedural chiptune engine (Web Audio). No audio files: every theme is a
+// pattern in data/music.js, and every sound effect is synthesized here.
+(function (IS) {
+  const A = { ctx: null, cur: null, want: null, step: 0, nextT: 0, timer: null, detune: 0 };
+  const midi = (n) => 440 * Math.pow(2, (n - 69) / 12);
+  const NOTE = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+
+  function parse(str) {
+    // tokens: C5, F#4, Bb3, '.' = rest, '-' = hold previous
+    const toks = str.trim().split(/\s+/);
+    const out = [];
+    toks.forEach((t, i) => {
+      if (t === '.' || t === '-') { out.push(null); return; }
+      const m = /^([A-G])(#|b)?(-?\d)$/.exec(t);
+      if (!m) { out.push(null); return; }
+      let n = NOTE[m[1]] + (m[2] === '#' ? 1 : m[2] === 'b' ? -1 : 0) + (parseInt(m[3], 10) + 1) * 12;
+      let len = 1; for (let j = i + 1; j < toks.length && toks[j] === '-'; j++) len++;
+      out.push({ n, len });
+    });
+    return out;
+  }
+
+  A.unlock = function () {
+    if (A.ctx) { if (A.ctx.state === 'suspended') A.ctx.resume(); return; }
+    try {
+      const C = window.AudioContext || window.webkitAudioContext; if (!C) return;
+      A.ctx = new C();
+      A.master = A.ctx.createGain(); A.master.connect(A.ctx.destination);
+      A.mus = A.ctx.createGain(); A.mus.connect(A.master);
+      A.fx = A.ctx.createGain(); A.fx.connect(A.master);
+      // gentle echo on music for atmosphere
+      const d = A.ctx.createDelay(); d.delayTime.value = 0.28;
+      const fb = A.ctx.createGain(); fb.gain.value = 0.22;
+      A.mus.connect(d); d.connect(fb); fb.connect(d); d.connect(A.master);
+      A.apply();
+      A.timer = setInterval(A.tick, 25);
+      if (A.want) { const w = A.want; A.want = null; A.play(w); }
+    } catch (e) { A.ctx = null; }
+  };
+
+  A.apply = function () {
+    if (!A.ctx) return;
+    const s = IS.settings || { master: 0.8, music: 0.6, sfx: 0.8 };
+    A.master.gain.value = s.master;
+    A.mus.gain.value = s.music * 0.32;
+    A.fx.gain.value = s.sfx * 0.45;
+  };
+
+  function tone(dest, freq, t, dur, type, vol, slide) {
+    const o = A.ctx.createOscillator(), g = A.ctx.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, t);
+    if (A.detune) o.detune.setValueAtTime((Math.random() - 0.5) * A.detune, t);
+    if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(30, freq * slide), t + dur);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(dest); o.start(t); o.stop(t + dur + 0.05);
+  }
+  function noise(t, dur, vol) {
+    const len = Math.floor(A.ctx.sampleRate * dur);
+    const buf = A.ctx.createBuffer(1, len, A.ctx.sampleRate);
+    const ch = buf.getChannelData(0); for (let i = 0; i < len; i++) ch[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    const s = A.ctx.createBufferSource(), g = A.ctx.createGain();
+    s.buffer = buf; g.gain.value = vol; s.connect(g); g.connect(A.fx); s.start(t);
+  }
+
+  A.play = function (id) {
+    if (A.cur && A.cur.id === id) return;
+    if (!A.ctx) { A.want = id; return; }
+    const m = IS.data.music[id];
+    if (!m) { A.cur = null; return; }
+    A.cur = { id, m, lead: parse(m.lead), bass: parse(m.bass), pad: m.pad ? parse(m.pad) : null };
+    A.step = 0; A.nextT = A.ctx.currentTime + 0.1;
+  };
+  A.stop = function () { A.cur = null; };
+
+  A.tick = function () {
+    if (!A.ctx || !A.cur) return;
+    const c = A.cur, spb = 60 / c.m.bpm / 2; // 8th notes
+    while (A.nextT < A.ctx.currentTime + 0.12) {
+      const i = A.step;
+      const L = c.lead[i % c.lead.length], B = c.bass[i % c.bass.length];
+      if (L) tone(A.mus, midi(L.n), A.nextT, spb * L.len * 0.95, c.m.wave || 'square', c.m.leadVol || 0.18);
+      if (B) tone(A.mus, midi(B.n), A.nextT, spb * B.len * 0.9, c.m.bassWave || 'triangle', c.m.bassVol || 0.3);
+      if (c.pad) { const P = c.pad[i % c.pad.length]; if (P) tone(A.mus, midi(P.n), A.nextT, spb * P.len, 'sine', 0.08); }
+      A.nextT += spb; A.step++;
+    }
+  };
+
+  const SFX = {
+    blip(t, p) { tone(A.fx, p || 620, t, 0.035, 'square', 0.07); },
+    select(t) { tone(A.fx, 660, t, 0.05, 'square', 0.12); },
+    confirm(t) { tone(A.fx, 523, t, 0.06, 'square', 0.14); tone(A.fx, 784, t + 0.06, 0.09, 'square', 0.14); },
+    back(t) { tone(A.fx, 392, t, 0.07, 'square', 0.12, 0.7); },
+    door(t) { noise(t, 0.12, 0.25); tone(A.fx, 110, t, 0.15, 'triangle', 0.3, 0.6); },
+    clue(t) { [72, 76, 79, 84].forEach((n, i) => tone(A.fx, midi(n), t + i * 0.07, 0.18, 'triangle', 0.22)); },
+    deduce(t) { [60, 67, 72, 76, 79, 84].forEach((n, i) => tone(A.fx, midi(n), t + i * 0.06, 0.3, 'square', 0.13)); },
+    wrong(t) { tone(A.fx, 220, t, 0.18, 'sawtooth', 0.1, 0.8); },
+    ach(t) { [67, 72, 76, 72, 79].forEach((n, i) => tone(A.fx, midi(n), t + i * 0.08, 0.16, 'square', 0.12)); },
+    bell(t) { [0, 0.35].forEach((o) => { tone(A.fx, 988, t + o, 1.6, 'sine', 0.22); tone(A.fx, 1318, t + o, 1.1, 'sine', 0.1); tone(A.fx, 494, t + o, 1.9, 'sine', 0.12); }); },
+    glitch(t) { noise(t, 0.25, 0.3); tone(A.fx, 80, t, 0.25, 'sawtooth', 0.15, 3); },
+    loop(t) { [84, 79, 76, 72, 67, 60, 55, 48].forEach((n, i) => tone(A.fx, midi(n), t + i * 0.11, 0.5, 'sine', 0.2)); },
+    step(t) { tone(A.fx, 90, t, 0.03, 'triangle', 0.05); }
+  };
+  A.sfx = function (id, p) { if (!A.ctx || !SFX[id]) return; SFX[id](A.ctx.currentTime + 0.005, p); };
+
+  IS.A = A;
+})(window.IS);
+
+</script>
+<script>/* src/art.js */
+// Procedural pixel art: tiles, characters and portraits are drawn from code
+// so the game ships without image assets. Swap any function for a sprite
+// sheet later without touching game logic.
+(function (IS) {
+  const Art = { night: false };
+
+  const THEMES = {
+    school:  { floor: ['#c4ad86', '#bba37c'], line: '#a8916c', top: '#2c2338', face: '#7b6b92', fline: '#6c5c83', trim: '#a898bf', base: '#251c2f' },
+    library: { floor: ['#6e4632', '#66402d'], line: '#55352a', top: '#1e1828', face: '#4f3f62', fline: '#433555', trim: '#7e6a96', base: '#160f1e' },
+    cafe:    { floor: ['#d8d0bd', '#a9a08d'], line: '#9a917f', top: '#2c2338', face: '#8d7d7a', fline: '#7c6c69', trim: '#b8a4a0', base: '#2a2024' },
+    gym:     { floor: ['#c98f52', '#c08848'], line: '#a8743e', top: '#2c2338', face: '#6e7e92', fline: '#5f6f83', trim: '#9fb0c4', base: '#20242c' },
+    lobby:   { floor: ['#cfc8bd', '#c4bdb1'], line: '#b0a99d', top: '#2c2338', face: '#857597', fline: '#766688', trim: '#b2a2c4', base: '#251c2f' },
+    office:  { floor: ['#7a2f38', '#702a33'], line: '#5e2229', top: '#241c2c', face: '#6c5a52', fline: '#5c4b44', trim: '#a08a78', base: '#1c1418' },
+    outdoor: { floor: ['#5f8a4c', '#5a8448'], line: '#4f7740', top: '#3a3046', face: '#8c7a9a', fline: '#7a688a', trim: '#b4a3c4', base: '#2a2134' },
+    roof:    { floor: ['#77737e', '#716d78'], line: '#615e69', top: '#3a3046', face: '#5d5866', fline: '#504c58', trim: '#8a8494', base: '#24212a' },
+    anomaly: { floor: ['#47656f', '#415d66'], line: '#36505a', top: '#0b1016', face: '#344c57', fline: '#2b414b', trim: '#86c9d2', base: '#060a0e' },
+    sub:     { floor: ['#262b37', '#232833'], line: '#1c212b', top: '#07080c', face: '#1e2430', fline: '#181d27', trim: '#3d6e78', base: '#040507' }
+  };
+  Art.THEMES = THEMES;
+  Art.SOLID = new Set('#EKWLDTBP=XrhoqvFYxwb'.split(''));
+  Art.WALLS = new Set('#EKWXr'.split(''));
+
+  const hsh = (x, y) => ((x * 73856093) ^ (y * 19349663)) >>> 0;
+
+  Art.tile = function (c, ch, x, y, tx, ty, th, below, t) {
+    const p = THEMES[th] || THEMES.school;
+    const R = (col, a, b, w, h) => { c.fillStyle = col; c.fillRect(x + a, y + b, w, h); };
+    const floor = () => {
+      const f = p.floor[(tx + ty) & 1];
+      if (th === 'cafe') { R(f, 0, 0, 16, 16); return; }
+      R(p.floor[0], 0, 0, 16, 16);
+      if (th === 'outdoor') { const h = hsh(tx, ty); R(p.line, h % 13, (h >> 4) % 13, 1, 2); R(p.floor[1], (h >> 8) % 12, (h >> 12) % 12, 2, 1); return; }
+      if (th === 'roof') { const h = hsh(tx, ty); R(p.line, h % 15, (h >> 3) % 15, 1, 1); R(p.line, (h >> 6) % 15, (h >> 9) % 15, 1, 1); return; }
+      if (th === 'office') { R(p.line, 0, 15, 16, 1); return; }
+      if (th === 'lobby' || th === 'anomaly' || th === 'sub') { R(p.line, 0, 15, 16, 1); R(p.line, 15, 0, 1, 16); return; }
+      R(p.line, 0, (tx & 1) ? 7 : 15, 16, 1); // plank seams
+      R(p.floor[1], (hsh(tx, ty) % 12), 3, 3, 1);
+    };
+    const wall = () => {
+      if (Art.WALLS.has(below)) { R(p.top, 0, 0, 16, 16); R(p.base, 0, 15, 16, 1); return false; }
+      R(p.face, 0, 0, 16, 16); R(p.trim, 0, 0, 16, 2); R(p.fline, 0, 6, 16, 1); R(p.base, 0, 13, 16, 3); return true;
+    };
+    switch (ch) {
+      case '#': case 'E': wall(); break;
+      case 'X': R('#000', 0, 0, 16, 16); break;
+      case 'K': if (wall()) { R('#2d5a45', 1, 3, 14, 8); R('#3f7059', 1, 3, 14, 1); R('#dfe6d0', 3 + (tx % 3), 5, 4, 1); R('#dfe6d0', 2 + (tx % 4), 8, 6, 1); } break;
+      case 'W': if (wall()) { const g = Art.night ? '#1a2342' : '#93c6d6'; R('#e8e0d0', 2, 2, 12, 10); R(g, 3, 3, 10, 8); R(Art.night ? '#2a3560' : '#cfeaf2', 4, 4, 3, 2); R('#e8e0d0', 7, 3, 1, 8); } break;
+      case 'r': R(p.floor[0], 0, 0, 16, 16); R('#4a4552', 0, 2, 16, 2); R('#4a4552', 0, 9, 16, 2); R('#3a3640', (tx % 2) * 8 + 2, 0, 2, 14); break;
+      case 'F': floor(); R('#3f3a48', 0, 3, 16, 2); R('#3f3a48', 0, 10, 16, 2); for (let i = 1; i < 16; i += 5) R('#2e2a36', i, 1, 2, 14); break;
+      case 'G': floor(); R('#5d5568', 0, 2, 2, 13); R('#5d5568', 14, 2, 2, 13); R('rgba(220,230,240,0.35)', 2, 0, 12, 16); break;
+      case 'Y': floor(); R('#5a3d2a', 6, 9, 4, 7); R('#2f5a32', 0, 0, 16, 11); R('#3f7642', 2, 1, 10, 7); R('#58924f', 4, 2, 4, 3); break;
+      case 'g': R('#4f7a3e', 0, 0, 16, 16); { const h = hsh(tx, ty); R('#e6c84a', h % 13, (h >> 4) % 13, 2, 2); R('#d96a6a', (h >> 8) % 13, (h >> 12) % 13, 2, 2); R('#3e6532', (h >> 5) % 14, (h >> 9) % 14, 1, 2); } break;
+      case 'p': R('#b6a98f', 0, 0, 16, 16); R('#a2957b', 0, 7, 8, 1); R('#a2957b', 8, 15, 8, 1); R('#a2957b', 7, 0, 1, 8); R('#a2957b', 15, 8, 1, 8); break;
+      case ',': R(p.floor[0], 0, 0, 16, 16); if ((tx + ty) % 2) R(p.floor[1], 4, 4, 8, 8); R(p.line, 0, 15, 16, 1); break;
+      case ':': floor(); break;
+      case 'S': R('#8d7f6a', 0, 0, 16, 16); for (let i = 0; i < 16; i += 4) { R('#6f624f', 0, i + 3, 16, 1); R('#a3957f', 0, i, 16, 1); } break;
+      case 'd': floor(); R('#1d1520', 2, 0, 12, 16); R('#3a2c40', 2, 0, 1, 16); R('#3a2c40', 13, 0, 1, 16); R('rgba(255,230,180,0.08)', 3, 10, 10, 6); break;
+      case 'L': floor(); R('#5b7a8e', 1, 0, 14, 16); R('#4a6577', 1, 0, 1, 16); R('#4a6577', 8, 0, 1, 16); for (let i = 3; i < 9; i += 2) { R('#3c5262', 3, i, 4, 1); R('#3c5262', 10, i, 4, 1); } R('#cfd8de', 6, 10, 1, 2); R('#cfd8de', 13, 10, 1, 2); R('#2f4250', 1, 15, 14, 1); break;
+      case 'D': floor(); R('#5a3c24', 2, 12, 1, 4); R('#5a3c24', 13, 12, 1, 4); R('#a3743f', 1, 3, 14, 8); R('#bf8c50', 1, 3, 14, 2); R('#7c5530', 1, 11, 14, 2); break;
+      case 'C': floor(); R('#6b4a2e', 4, 4, 8, 2); R('#8a6038', 4, 6, 8, 5); R('#5a3c24', 4, 11, 1, 4); R('#5a3c24', 11, 11, 1, 4); break;
+      case 'T': floor(); R('#7d5130', 0, 2, 16, 10); R('#96643c', 0, 2, 16, 2); R('#5e3c22', 0, 12, 16, 2); break;
+      case 'B': R('#3e2719', 0, 0, 16, 16); for (let r = 0; r < 3; r++) { R('#2a1a10', 0, r * 5 + 4, 16, 1); for (let b = 1; b < 15; b += 3) { const h = hsh(tx * 7 + b, ty * 3 + r); R(['#a8443a', '#3a6a8c', '#c9a24a', '#4f7a4a', '#7a4f8c', '#d8d0c0'][h % 6], b, r * 5 + 1 + (h % 2), 2, 3 - (h % 2)); } } break;
+      case 'P': floor(); R('#9c5434', 5, 10, 6, 5); R('#7c3f24', 5, 14, 6, 1); R('#3f7a3a', 3, 2, 10, 9); R('#58a04e', 5, 3, 3, 3); R('#2f5f2c', 9, 6, 3, 3); break;
+      case '=': floor(); R('#9aa3ad', 0, 2, 16, 9); R('#b9c1ca', 0, 2, 16, 2); R('#6c757f', 0, 11, 16, 4); break;
+      case 'h': floor(); R('#222a30', 0, 3, 16, 9); R('#36424a', 0, 3, 16, 2); R('#4a5a63', 0, 12, 16, 3); { const h = hsh(tx, ty); R(['#6fd18a', '#d16f9a', '#6fa8d1'][h % 3], 3 + (h % 6), 0, 3, 5); R('#cfe8ef', 10, 1, 2, 4); } break;
+      case 'q': floor(); R('#a9b4bd', 1, 3, 14, 10); R('#5f6c76', 3, 5, 10, 6); R('#cfd8de', 7, 1, 2, 4); break;
+      case 'o': floor(); R('#7a5530', 3, 4, 1, 12); R('#7a5530', 12, 4, 1, 12); R('#f2ead8', 2, 1, 12, 9); R(['#c9604a', '#4a7ac9', '#8a8a8a'][hsh(tx, ty) % 3], 4, 3, 8, 5); break;
+      case 'v': floor(); R('#a3343a', 1, 0, 14, 16); R('#2a2230', 3, 2, 7, 9); R('#e6c84a', 4, 3, 2, 2); R('#6fa84a', 7, 3, 2, 2); R('#e6c84a', 4, 7, 5, 2); R('#d8d0c0', 11, 3, 2, 6); break;
+      case 'x': floor(); R('#5d4a3a', 1, 2, 14, 13); R('#73604e', 1, 2, 14, 2); R('#4a3a2c', 7, 4, 2, 11); break;
+      case 'b': floor(); R('#7a5530', 1, 5, 14, 3); R('#8f6a40', 1, 9, 14, 2); R('#4f3820', 2, 11, 1, 4); R('#4f3820', 13, 11, 1, 4); break;
+      case 'm': R('#3a5f9a', 0, 0, 16, 16); R('#2f4f82', 0, 7, 16, 1); break;
+      case 'w': {
+        R('#0e2a34', 0, 0, 16, 16);
+        const s = Math.sin(t * 1.5 + tx * 0.7 + ty) * 0.5 + 0.5;
+        R('rgba(120,220,230,' + (0.15 + s * 0.2).toFixed(2) + ')', 2 + ((tx * 3) % 8), 4 + ((ty * 5) % 7), 5, 1);
+        R('rgba(160,240,255,0.12)', 0, 0, 16, 16);
+        break;
+      }
+      case '~': floor(); { const s = Math.sin(t * 3 + tx * 1.3 + ty * 0.7); if (s > 0.3) R('rgba(140,230,240,' + (s * 0.35).toFixed(2) + ')', (tx * 5) % 12, (ty * 7) % 12, 3, 3); } break;
+      default: floor();
+    }
+  };
+
+  // ---------- characters ----------
+  // look = {skin, hair, hs (hairstyle), top, bot, acc, accC}
+  Art.char = function (c, L, x, y, dir, frame, opt) {
+    opt = opt || {};
+    x = Math.round(x); y = Math.round(y);
+    const R = (col, a, b, w, h) => { c.fillStyle = col; c.fillRect(x + a, y + b, w, h); };
+    if (opt.alpha != null) c.globalAlpha = opt.alpha;
+    if (!opt.noShadow) { c.fillStyle = 'rgba(0,0,0,0.28)'; c.fillRect(x - 5, y - 1, 10, 2); c.fillRect(x - 4, y - 2, 8, 1); }
+    const bob = frame === 1 ? -1 : 0;
+    const legA = frame === 1 ? 1 : 0, legB = frame === 1 ? -1 : 0;
+    // legs
+    R(L.bot, -3, -5 + Math.max(0, legB), 2, 5 - Math.max(0, legB));
+    R(L.bot, 1, -5 + Math.max(0, legA), 2, 5 - Math.max(0, legA));
+    R('#1b1620', -3, -1, 2, 1); R('#1b1620', 1, -1, 2, 1);
+    // body
+    R(L.top, -4, -12 + bob, 8, 7);
+    R(shade(L.top), -4, -6 + bob, 8, 1);
+    // arms
+    if (dir === 2 || dir === 3) R(L.skin, dir === 2 ? -1 : 0, -9 + bob, 2, 3);
+    else { R(L.top, -5, -11 + bob, 1, 5); R(L.top, 4, -11 + bob, 1, 5); R(L.skin, -5, -6 + bob, 1, 1); R(L.skin, 4, -6 + bob, 1, 1); }
+    // accessories on body
+    if (L.acc === 'tie') R(L.accC || '#a02c2c', -1, -12 + bob, 2, 5);
+    if (L.acc === 'apron') R(L.accC || '#d8d0c0', -3, -10 + bob, 6, 5);
+    if (L.acc === 'coat') { R('#e9edf0', -4, -12 + bob, 2, 7); R('#e9edf0', 2, -12 + bob, 2, 7); }
+    if (L.acc === 'whistle') R('#d8d0c0', 0, -10 + bob, 1, 2);
+    // head
+    R(L.skin, -4, -19 + bob, 8, 7);
+    // hair
+    const H = L.hair, hs = L.hs || 'short';
+    R(H, -4, -20 + bob, 8, 2);
+    if (dir === 1) R(H, -4, -19 + bob, 8, 5);
+    else if (dir === 2) R(H, -1, -19 + bob, 5, 3);
+    else if (dir === 3) R(H, -4, -19 + bob, 5, 3);
+    else R(H, -4, -19 + bob, 8, 1);
+    if (hs === 'long') { R(H, -5, -19 + bob, 1, 9); R(H, 4, -19 + bob, 1, 9); if (dir === 1) R(H, -4, -14 + bob, 8, 4); }
+    if (hs === 'bun') { R(H, -2, -23 + bob, 4, 3); }
+    if (hs === 'spiky') { R(H, -4, -22 + bob, 2, 2); R(H, 0, -22 + bob, 2, 2); R(H, 3, -21 + bob, 1, 1); }
+    if (hs === 'bald') { R(L.skin, -3, -20 + bob, 6, 1); R(H, -4, -17 + bob, 1, 3); R(H, 3, -17 + bob, 1, 3); }
+    if (hs === 'cap') { R(L.accC || '#c45a2a', -5, -21 + bob, 10, 3); if (dir === 0) R(shade(L.accC || '#c45a2a'), -4, -18 + bob, 8, 1); }
+    if (L.acc === 'ribbon') R(L.accC, 2, -22 + bob, 3, 2);
+    // face
+    if (dir === 0) { R('#1b1620', -2, -15 + bob, 1, 2); R('#1b1620', 1, -15 + bob, 1, 2); }
+    if (dir === 2) R('#1b1620', -3, -15 + bob, 1, 2);
+    if (dir === 3) R('#1b1620', 2, -15 + bob, 1, 2);
+    if (L.acc2 === 'glasses' && dir !== 1) { c.fillStyle = 'rgba(230,240,255,0.55)'; if (dir === 0) { c.fillRect(x - 3, y - 15 + bob, 2, 2); c.fillRect(x + 1, y - 15 + bob, 2, 2); } else c.fillRect(x + (dir === 2 ? -4 : 1), y - 15 + bob, 3, 2); }
+    if (opt.glow) { c.globalAlpha = 0.25; R('#bff4ff', -5, -21 + bob, 10, 21); }
+    c.globalAlpha = 1;
+  };
+
+  function shade(hex) {
+    const n = parseInt(hex.slice(1), 16);
+    const r = Math.max(0, (n >> 16) - 30), g = Math.max(0, ((n >> 8) & 255) - 30), b = Math.max(0, (n & 255) - 30);
+    return '#' + ((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1);
+  }
+  Art.shade = shade;
+
+  const pcache = {};
+  Art.portrait = function (key, look, kind) {
+    if (pcache[key]) return pcache[key];
+    const cv = document.createElement('canvas'); cv.width = 16; cv.height = 16;
+    const c = cv.getContext('2d');
+    if (kind === 'orb') {
+      for (let r = 7; r > 0; r--) { c.fillStyle = 'rgba(120,230,240,' + (0.12 + (7 - r) * 0.1) + ')'; c.beginPath(); c.arc(8, 8, r, 0, 7); c.fill(); }
+      c.fillStyle = '#e8fdff'; c.fillRect(7, 7, 2, 2);
+    } else if (look) {
+      Art.char(c, look, 8, 26, 0, 0, { noShadow: true });
+    }
+    pcache[key] = cv; return cv;
+  };
+
+  // Player look — tweakable later through a character creator
+  Art.PLAYER = { skin: '#e0b48e', hair: '#3b2a24', hs: 'short', top: '#3c4a7a', bot: '#2a2a36', acc: 'tie', accC: '#8a2c3a' };
+
+  IS.Art = Art;
+})(window.IS);
+
+</script>
+<script>/* src/state.js */
+// Game state, rules engine (conditions/effects), time loop and persistence.
+// Flags prefixed "L." are loop-local and are wiped at midnight. Everything
+// else (clues, deductions, knowledge) survives the reset: that is the game.
+(function (IS) {
+  const G = {};
+  const DEF_SETTINGS = { master: 0.8, music: 0.6, sfx: 0.8, textSpeed: 1, shake: true, fx: 2, crt: false, big: false, plain: false, contrast: false, touch: 0, flow: 1, hints: true };
+  IS.settings = Object.assign({}, DEF_SETTINGS, IS.store.get('settings', {}));
+  IS.meta = Object.assign({ ach: {}, endings: {}, bestLoop: 0 }, IS.store.get('meta', {}));
+
+  G.saveSettings = () => { IS.store.set('settings', IS.settings); IS.A.apply(); };
+  G.saveMeta = () => IS.store.set('meta', IS.meta);
+
+  G.newGame = function (name) {
+    IS.S = {
+      v: 1, name: (name || 'Ash').slice(0, 10), loop: 1, time: IS.DAY_START, room: 'c2b', x: 0, y: 0, dir: 1,
+      flags: {}, clues: [], newClues: {}, bonds: {}, insight: {}, items: [], phase: 1, visited: {},
+      playMs: 0, created: Date.now()
+    };
+    G.loopRules();
+  };
+
+  // ---------- flags / progress ----------
+  G.has = (f) => !!(IS.S && IS.S.flags[f]);
+  G.set = (f, v) => { IS.S.flags[f] = v === undefined ? true : v; };
+  G.unset = (f) => { delete IS.S.flags[f]; };
+
+  G.addClue = function (id) {
+    const S = IS.S, c = IS.data.clues[id];
+    if (!c) { console.warn('Unknown clue', id); return false; }
+    if (S.clues.includes(id)) return false;
+    S.clues.push(id); S.newClues[id] = 1;
+    IS.UI.toast('New clue: ' + c.title, 'clue'); IS.A.sfx('clue');
+    return true;
+  };
+
+  G.bond = function (n, v) {
+    const S = IS.S;
+    const before = S.bonds[n] || 0;
+    S.bonds[n] = IS.clamp(before + v, 0, 5);
+    S.insight[n] = Math.max(S.insight[n] || 0, S.bonds[n]);
+    if (S.bonds[n] > before) {
+      const nm = (IS.data.npcs[n] && IS.data.npcs[n].short) || n;
+      IS.UI.toast(nm + '  ' + '♥'.repeat(S.bonds[n]) + '·'.repeat(5 - S.bonds[n]), 'bond');
+    }
+  };
+
+  G.ach = function (id) {
+    if (IS.meta.ach[id]) return;
+    const a = IS.data.achievements.find((x) => x.id === id);
+    if (!a) return;
+    IS.meta.ach[id] = Date.now(); G.saveMeta();
+    IS.UI.toast('Achievement — ' + a.title, 'ach'); IS.A.sfx('ach');
+  };
+  G.checkAch = function () {
+    if (!IS.S) return;
+    for (const a of IS.data.achievements) if (a.auto && !IS.meta.ach[a.id] && G.ok(a.auto)) G.ach(a.id);
+  };
+
+  G.setPhase = function (n) {
+    if (n <= IS.S.phase) return;
+    IS.S.phase = n;
+    IS.pendingCard = { big: 'PHASE ' + n, small: IS.data.phases[n] || '', sfx: 'glitch' };
+  };
+
+  G.isAware = function (id) {
+    const n = IS.data.npcs[id]; if (!n) return false;
+    return !!(n.aware || (n.awareIf && G.ok(n.awareIf)));
+  };
+
+  // Try to connect two clues on the evidence board
+  G.deduce = function (a, b) {
+    for (const d of IS.data.deductions) {
+      const hit = d.pairs.some((p) => (p[0] === a && p[1] === b) || (p[0] === b && p[1] === a));
+      if (!hit) continue;
+      if (G.has('d.' + d.id)) return { already: true, d };
+      G.set('d.' + d.id);
+      IS.A.sfx('deduce');
+      G.ach('red_string');
+      G.apply(d.do);
+      if (IS.data.deductions.every((x) => G.has('d.' + x.id))) G.ach('conspiracy');
+      return { ok: true, d };
+    }
+    return null;
+  };
+
+  // ---------- conditions ----------
+  G.ok = function (c) {
+    if (!c) return true;
+    const S = IS.S;
+    const arr = (v) => [].concat(v);
+    if (c.flag && !arr(c.flag).every(G.has)) return false;
+    if (c.not && arr(c.not).some(G.has)) return false;
+    if (c.any && !arr(c.any).some(G.has)) return false;
+    if (c.loop && (S.loop < c.loop[0] || S.loop > (c.loop[1] == null ? 1e9 : c.loop[1]))) return false;
+    if (c.time && (S.time < c.time[0] || S.time >= c.time[1])) return false;
+    if (c.phase && S.phase < c.phase) return false;
+    if (c.maxPhase && S.phase > c.maxPhase) return false;
+    if (c.room && S.room !== c.room) return false;
+    if (c.bond) for (const k in c.bond) if ((S.bonds[k] || 0) < c.bond[k]) return false;
+    if (c.insight) for (const k in c.insight) if ((S.insight[k] || 0) < c.insight[k]) return false;
+    if (c.n) for (const k in c.n) if ((S.flags[k] || 0) < c.n[k]) return false;
+    if (c.clue && !arr(c.clue).every((id) => S.clues.includes(id))) return false;
+    if (c.noclue && arr(c.noclue).some((id) => S.clues.includes(id))) return false;
+    if (c.clues && S.clues.length < c.clues) return false;
+    if (c.item && !arr(c.item).every((i) => S.items.includes(i))) return false;
+    if (c.noitem && arr(c.noitem).some((i) => S.items.includes(i))) return false;
+    if (c.visited && !arr(c.visited).every((r) => S.visited[r])) return false;
+    if (c.allRooms && !Object.keys(IS.data.rooms).filter((r) => !IS.data.rooms[r].secret).every((r) => S.visited[r])) return false;
+    if (c.chance && IS.loopRand(c.seed || 'chance') > c.chance) return false;
+    if (c.or && !c.or.some(G.ok)) return false;
+    return true;
+  };
+
+  // ---------- effects ----------
+  G.apply = function (e) {
+    if (!e) return;
+    const S = IS.S, arr = (v) => [].concat(v);
+    if (e.set) arr(e.set).forEach((f) => G.set(f));
+    if (e.unset) arr(e.unset).forEach(G.unset);
+    if (e.inc) arr(e.inc).forEach((f) => { S.flags[f] = (S.flags[f] || 0) + 1; });
+    if (e.clue) arr(e.clue).forEach(G.addClue);
+    if (e.bond) for (const k in e.bond) G.bond(k, e.bond[k]);
+    if (e.item) arr(e.item).forEach((i) => { if (!S.items.includes(i)) { S.items.push(i); IS.UI.toast('Got: ' + IS.data.items[i].name, 'item'); IS.A.sfx('confirm'); } });
+    if (e.take) arr(e.take).forEach((i) => { S.items = S.items.filter((x) => x !== i); });
+    if (e.time) S.time = Math.min(IS.DAY_END - 1, S.time + e.time);
+    if (e.timeTo) S.time = Math.max(S.time, e.timeTo);
+    if (e.nextBell) { const b = IS.data.bells.find((x) => x[0] > S.time); S.time = b ? b[0] : Math.max(S.time, 900); }
+    if ((e.time || e.timeTo || e.nextBell) && IS.Wd.room) { IS.Wd.placeNPCs(true); IS.Wd.music(); IS.Wd.fade = 1; }
+    if (e.phase) G.setPhase(e.phase);
+    if (e.ach) G.ach(e.ach);
+    if (e.sfx) IS.A.sfx(e.sfx);
+    if (e.shake && IS.settings.shake) IS.Wd.shake = Math.max(IS.Wd.shake, e.shake);
+    if (e.glitch) IS.Wd.glitch = Math.max(IS.Wd.glitch, e.glitch);
+    if (e.warp) IS.pendingWarp = e.warp;
+    if (e.ending) IS.pendingEnding = e.ending;
+    if (e.endDay) IS.pendingMidnight = true;
+    if (e.card) IS.pendingCard = e.card;
+    if (e.toast) IS.UI.toast(e.toast);
+    if (e.music) IS.A.play(e.music);
+    G.checkAch();
+  };
+
+  // ---------- time & loop ----------
+  G.period = function (t) {
+    let p = IS.data.periods[0];
+    for (const x of IS.data.periods) if (t >= x[0]) p = x;
+    return p ? p[1] : '';
+  };
+
+  G.loopRules = function () { for (const r of IS.data.loopRules) if (G.ok(r.if)) G.apply(r.do); };
+
+  G.resetLoop = function () {
+    const S = IS.S;
+    S.loop++;
+    IS.meta.bestLoop = Math.max(IS.meta.bestLoop || 0, S.loop); G.saveMeta();
+    for (const k of Object.keys(S.flags)) if (k.startsWith('L.')) delete S.flags[k];
+    for (const n of Object.keys(S.bonds)) if (!G.isAware(n)) S.bonds[n] = 0;
+    S.items = S.items.filter((i) => IS.data.items[i] && IS.data.items[i].anchored);
+    S.time = IS.DAY_START;
+    G.loopRules();
+    // endings that trigger on waking up
+    for (const id in IS.data.endings) {
+      const e = IS.data.endings[id];
+      if (e.onLoop && G.ok(e.onLoop)) { IS.pendingEnding = id; return; }
+    }
+    const r = IS.data.rooms.c2b;
+    S.room = 'c2b'; S.x = r.spawn[0]; S.y = r.spawn[1]; S.dir = 1;
+    G.checkAch();
+    G.save('auto');
+  };
+
+  // ---------- persistence ----------
+  G.save = function (slot) {
+    if (!IS.S) return;
+    if (IS.Wd && IS.Wd.p) { IS.S.x = Math.floor(IS.Wd.p.x / 16); IS.S.y = Math.floor((IS.Wd.p.y - 1) / 16); IS.S.dir = IS.Wd.p.dir; }
+    const snap = JSON.parse(JSON.stringify(IS.S)); snap.savedAt = Date.now();
+    IS.store.set('slot.' + slot, snap);
+    if (slot !== 'auto') { IS.UI.toast('Saved to slot ' + slot); IS.A.sfx('confirm'); }
+  };
+  G.slot = (slot) => IS.store.get('slot.' + slot, null);
+  G.load = function (slot) {
+    const s = G.slot(slot); if (!s) return false;
+    IS.S = s; return true;
+  };
+
+  IS.G = G;
+})(window.IS);
+
+</script>
+<script>/* src/world.js */
+// The overworld: room building, movement + collision, NPC schedules,
+// interaction, the clock, and the lighting / anomaly post effects.
+(function (IS) {
+  const T = 16;
+  const Wd = { room: null, grid: null, npcs: [], p: { x: 0, y: 0, dir: 0, anim: 0, moving: false }, cam: { x: 0, y: 0 },
+    shake: 0, glitch: 0, fade: 0, parts: [], schedKey: '', schedT: 0, t: 0, stepT: 0, title: null, titleT: 0 };
+
+  const DIRS = [[0, 1], [0, -1], [-1, 0], [1, 0]]; // down, up, left, right
+
+  Wd.tileAt = (tx, ty) => (!Wd.grid || ty < 0 || tx < 0 || ty >= Wd.grid.length || tx >= Wd.grid[0].length) ? '#' : Wd.grid[ty][tx];
+  Wd.solidAt = (tx, ty) => IS.Art.SOLID.has(Wd.tileAt(tx, ty));
+
+  Wd.build = function () {
+    const r = Wd.room;
+    Wd.grid = r.map.map((row) => row.padEnd(r.w, '#').slice(0, r.w).split(''));
+    for (const d of r.dyn || []) if (IS.G.ok(d.if)) Wd.grid[d.y][d.x] = d.t;
+  };
+
+  Wd.enter = function (id, tx, ty, dir, opts) {
+    opts = opts || {};
+    const r = IS.data.rooms[id];
+    if (!r) { console.warn('No room', id); return; }
+    const S = IS.S;
+    r.id = id; Wd.room = r; S.room = id;
+    r.w = r.map[0].length; r.h = r.map.length;
+    Wd.build();
+    Wd.p.x = tx * T + 8; Wd.p.y = ty * T + 13; Wd.p.dir = dir == null ? Wd.p.dir : dir;
+    S.visited[id] = 1;
+    Wd.fade = 1; Wd.schedKey = ''; Wd.placeNPCs(true);
+    Wd.parts = [];
+    Wd.music();
+    if (!opts.silent) { Wd.title = r.name; Wd.titleT = 2.2; }
+    IS.G.checkAch();
+    // room enter events
+    if (!opts.noEvents) for (const ev of r.enter || []) {
+      if (IS.G.ok(ev.if) && !(ev.once && IS.G.has('L.seen.' + ev.scene)) && !(ev.onceEver && IS.G.has('seen.' + ev.scene))) { IS.pendingScene = ev.scene; break; }
+    }
+  };
+
+  Wd.music = function () {
+    const r = Wd.room; if (!r) return;
+    let m = r.music;
+    if (IS.S.time >= 1260 && r.nightMusic !== false && !r.keepMusic) m = 'night';
+    else if (IS.S.time >= 1020 && r.duskMusic) m = r.duskMusic;
+    IS.A.play(m);
+  };
+
+  // ---------- NPC scheduling ----------
+  function schedEntry(n) {
+    if (n.absentIf && IS.G.ok(n.absentIf)) return null;
+    let e = null;
+    for (const s of n.sched || []) if (IS.S.time >= s[0]) e = s;
+    if (!e || !e[1]) return null;
+    const o = e[5] || {};
+    if (o.if && !IS.G.ok(o.if)) return null;
+    let room = e[1], x = e[2], y = e[3];
+    if (o.vary) { const v = o.vary[Math.floor(IS.loopRand(n.id + e[0]) * o.vary.length)]; room = v[0]; x = v[1]; y = v[2]; }
+    return { room, x, y, dir: e[4] || 0, wander: o.wander };
+  }
+
+  Wd.placeNPCs = function (force) {
+    const list = [];
+    for (const id in IS.data.npcs) {
+      const n = IS.data.npcs[id]; n.id = id;
+      const e = schedEntry(n);
+      if (e && e.room === Wd.room.id) list.push({ id, x: e.x, y: e.y, dir: e.dir, wander: e.wander });
+    }
+    for (const ln of Wd.room.npcs || []) if (IS.G.ok(ln.if)) list.push(Object.assign({}, ln));
+    const key = list.map((n) => n.id + n.x + ',' + n.y).join('|');
+    if (!force && key === Wd.schedKey) return;
+    Wd.schedKey = key;
+    Wd.npcs = list.map((n) => {
+      const old = Wd.npcs.find((o) => o.id === n.id && o.hx === n.x && o.hy === n.y);
+      if (old && !force) return old;
+      return { id: n.id, talk: n.talk || n.id, ghost: n.ghost, hx: n.x, hy: n.y, x: n.x * T + 8, y: n.y * T + 13, dir: n.dir, baseDir: n.dir,
+        wander: n.wander, wt: Math.random() * 3, vx: 0, vy: 0, anim: 0 };
+    });
+  };
+
+  // ---------- collision ----------
+  function blocked(x, y, self) {
+    const hw = 4;
+    const pts = [[x - hw, y - 4], [x + hw - 1, y - 4], [x - hw, y], [x + hw - 1, y]];
+    for (const [px, py] of pts) if (Wd.solidAt(Math.floor(px / T), Math.floor(py / T))) return true;
+    for (const n of Wd.npcs) {
+      if (n === self) continue;
+      if (Math.abs(n.x - x) < 9 && Math.abs(n.y - y) < 6) return true;
+    }
+    if (self && self !== Wd.p && Math.abs(Wd.p.x - x) < 9 && Math.abs(Wd.p.y - y) < 6) return true;
+    return false;
+  }
+
+  function moveEnt(e, dx, dy) {
+    if (dx && !blocked(e.x + dx, e.y, e)) e.x += dx;
+    else if (dx && e === Wd.p) { // corner slide
+      if (!blocked(e.x + dx, e.y - 3, e) && blocked(e.x + dx, e.y + 3, e)) e.y -= 0.6;
+      else if (!blocked(e.x + dx, e.y + 3, e) && blocked(e.x + dx, e.y - 3, e)) e.y += 0.6;
+    }
+    if (dy && !blocked(e.x, e.y + dy, e)) e.y += dy;
+    else if (dy && e === Wd.p) {
+      if (!blocked(e.x - 3, e.y + dy, e) && blocked(e.x + 3, e.y + dy, e)) e.x -= 0.6;
+      else if (!blocked(e.x + 3, e.y + dy, e) && blocked(e.x - 3, e.y + dy, e)) e.x += 0.6;
+    }
+  }
+
+  // ---------- interaction ----------
+  function objAt(tx, ty) {
+    for (const o of Wd.room.obj || []) {
+      const w = o.w || 1, h = o.h || 1;
+      if (tx >= o.x && tx < o.x + w && ty >= o.y && ty < o.y + h) {
+        const e = IS.D.pick(o.d); if (e) return e;
+      }
+    }
+    return null;
+  }
+  function npcNear(px, py) {
+    let best = null, bd = 1e9;
+    for (const n of Wd.npcs) { const d = Math.hypot(n.x - px, n.y - py); if (d < 13 && d < bd) { bd = d; best = n; } }
+    return best;
+  }
+
+  Wd.interact = function () {
+    const p = Wd.p, [dx, dy] = DIRS[p.dir];
+    const n = npcNear(p.x + dx * 10, p.y - 2 + dy * 10);
+    if (n) return Wd.talk(n);
+    const tx = Math.floor((p.x + dx * 10) / T), ty = Math.floor((p.y - 3 + dy * 10) / T);
+    let e = objAt(tx, ty);
+    if (e) return IS.D.run(e);
+    // reach across counters / tables
+    const ch = Wd.tileAt(tx, ty);
+    if ('=T'.includes(ch)) {
+      const n2 = npcNear(p.x + dx * 26, p.y - 2 + dy * 26);
+      if (n2) return Wd.talk(n2);
+    }
+    // generic lore books on library shelves
+    if (ch === 'B' && Wd.room.books && IS.data.books.length) {
+      const b = IS.data.books[(tx * 31 + ty * 17 + IS.S.loop) % IS.data.books.length];
+      return IS.D.run({ lines: b });
+    }
+    e = objAt(Math.floor(p.x / T), Math.floor((p.y - 3) / T));
+    if (e) return IS.D.run(e);
+  };
+
+  Wd.talk = function (n) {
+    const p = Wd.p;
+    const dx = p.x - n.x, dy = p.y - n.y;
+    n.dir = Math.abs(dx) > Math.abs(dy) ? (dx < 0 ? 2 : 3) : (dy < 0 ? 1 : 0);
+    n.vx = n.vy = 0;
+    const e = IS.D.pick(IS.data.dialogue[n.talk]);
+    if (e) { IS.D.run(e, n); return true; }
+    IS.D.run({ lines: ['They seem busy.'] });
+    return true;
+  };
+
+  // ---------- update ----------
+  Wd.update = function (dt) {
+    const I = IS.I, p = Wd.p, S = IS.S;
+    Wd.t += dt;
+    if (Wd.fade > 0) Wd.fade = Math.max(0, Wd.fade - dt * 3);
+    if (Wd.titleT > 0) Wd.titleT -= dt;
+    if (Wd.shake > 0) Wd.shake = Math.max(0, Wd.shake - dt * 6);
+    const baseGlitch = Wd.room.glitch || 0;
+    if (Wd.glitch > baseGlitch) Wd.glitch = Math.max(baseGlitch, Wd.glitch - dt * 0.8); else Wd.glitch = baseGlitch;
+
+    // movement
+    let mx = (I.held.right ? 1 : 0) - (I.held.left ? 1 : 0);
+    let my = (I.held.down ? 1 : 0) - (I.held.up ? 1 : 0);
+    const run = I.held.run;
+    const sp = (run ? 100 : 62) * dt;
+    if (mx || my) {
+      if (mx && my) { mx *= 0.7071; my *= 0.7071; }
+      if (Math.abs(mx) > Math.abs(my) + 0.01) p.dir = mx < 0 ? 2 : 3; else if (my) p.dir = my < 0 ? 1 : 0; else p.dir = mx < 0 ? 2 : 3;
+      moveEnt(p, mx * sp, my * sp);
+      p.anim += dt * (run ? 10 : 7); p.moving = true;
+      Wd.stepT += dt; if (Wd.stepT > (run ? 0.22 : 0.3)) { Wd.stepT = 0; IS.A.sfx('step'); }
+    } else { p.moving = false; p.anim = 0; }
+
+    // exits
+    const ftx = Math.floor(p.x / T), fty = Math.floor((p.y - 2) / T);
+    for (const ex of Wd.room.exits || []) {
+      if (ex.x !== ftx || ex.y !== fty) continue;
+      if (ex.if && !IS.G.ok(ex.if)) {
+        // bounce back and explain
+        const [dx, dy] = DIRS[p.dir]; p.x -= dx * 6; p.y -= dy * 6;
+        if (ex.lock) IS.D.run({ lines: [].concat(ex.lock) });
+        return;
+      }
+      if (ex.scene) { const [dx, dy] = DIRS[p.dir]; p.x -= dx * 6; p.y -= dy * 6; IS.D.run(ex.scene); return; }
+      IS.A.sfx('door');
+      S.time = Math.min(IS.DAY_END - 1, S.time + 1);
+      Wd.enter(ex.to, ex.tx, ex.ty, ex.dir);
+      return;
+    }
+    // trigger zones
+    for (const tr of Wd.room.triggers || []) {
+      if (ftx >= tr.x && ftx < tr.x + (tr.w || 1) && fty >= tr.y && fty < tr.y + (tr.h || 1) && IS.G.ok(tr.if) && !IS.G.has('L.seen.' + tr.scene)) {
+        IS.D.run(tr.scene); return;
+      }
+    }
+
+    if (I.pressed.ok) { Wd.interact(); }
+
+    // NPC idle / wander
+    for (const n of Wd.npcs) {
+      n.wt -= dt;
+      if (n.wander) {
+        if (n.wt <= 0) {
+          n.wt = 1.5 + Math.random() * 2.5;
+          const d = Math.floor(Math.random() * 5);
+          if (d < 4) { n.vx = DIRS[d][0] * 22; n.vy = DIRS[d][1] * 22; n.dir = d; } else { n.vx = n.vy = 0; }
+        }
+        if (Math.abs(n.x - (n.hx * T + 8)) > 28) n.vx = (n.hx * T + 8 - n.x) > 0 ? 22 : -22;
+        if (Math.abs(n.y - (n.hy * T + 13)) > 20) n.vy = (n.hy * T + 13 - n.y) > 0 ? 22 : -22;
+        if (n.vx || n.vy) { const ox = n.x, oy = n.y; moveEnt(n, n.vx * dt, n.vy * dt); n.anim += dt * 6; if (ox === n.x && oy === n.y) { n.vx = n.vy = 0; } }
+        else n.anim = 0;
+      } else if (n.wt <= 0) { n.wt = 3; n.dir = n.baseDir; }
+    }
+
+    // particles: dust motes in sunlight
+    if (Wd.room.theme !== 'sub' && Wd.parts.length < 24 && Math.random() < dt * 6) {
+      Wd.parts.push({ x: Wd.cam.x + Math.random() * IS.W, y: Wd.cam.y + Math.random() * IS.H, life: 4 + Math.random() * 4, vx: (Math.random() - 0.5) * 4, vy: -2 - Math.random() * 3 });
+    }
+    for (const q of Wd.parts) { q.x += q.vx * dt; q.y += q.vy * dt; q.life -= dt; }
+    Wd.parts = Wd.parts.filter((q) => q.life > 0);
+
+    // clock
+    Wd.tickClock(dt);
+  };
+
+  Wd.tickClock = function (dt) {
+    const S = IS.S;
+    if (Wd.room.timeless) return;
+    const before = S.time;
+    const rate = IS.settings.flow === 2 ? 0.6 : 1.25; // game minutes per real second
+    S.time += dt * rate;
+    S.playMs += dt * 1000;
+    for (const b of IS.data.bells) if (before < b[0] && S.time >= b[0]) { IS.A.sfx('bell'); IS.UI.toast('♪ ' + b[1]); }
+    if (Math.floor(before) !== Math.floor(S.time)) {
+      Wd.schedT++;
+      if (Wd.schedT >= 2) { Wd.schedT = 0; Wd.placeNPCs(false); Wd.music(); }
+      IS.G.checkAch();
+    }
+    if (S.time >= IS.DAY_END - 6 && S.phase >= 2) Wd.glitch = Math.max(Wd.glitch, (S.time - (IS.DAY_END - 6)) / 6);
+    if (S.time >= IS.DAY_END) { S.time = IS.DAY_END; IS.pendingMidnight = true; }
+  };
+
+  // ---------- draw ----------
+  Wd.draw = function (c) {
+    const r = Wd.room, p = Wd.p, S = IS.S;
+    const pw = r.w * T, ph = r.h * T;
+    IS.Art.night = S.time >= 1170;
+    Wd.cam.x = pw <= IS.W ? (pw - IS.W) / 2 : IS.clamp(p.x - IS.W / 2, 0, pw - IS.W);
+    Wd.cam.y = ph <= IS.H ? (ph - IS.H) / 2 : IS.clamp(p.y - 8 - IS.H / 2, 0, ph - IS.H);
+    let ox = Math.round(-Wd.cam.x), oy = Math.round(-Wd.cam.y);
+    if (Wd.shake > 0) { ox += Math.round((Math.random() - 0.5) * Wd.shake * 4); oy += Math.round((Math.random() - 0.5) * Wd.shake * 4); }
+    c.fillStyle = r.theme === 'sub' || r.theme === 'anomaly' ? '#05070a' : '#140f1a';
+    c.fillRect(0, 0, IS.W, IS.H);
+    const x0 = Math.max(0, Math.floor(-ox / T)), y0 = Math.max(0, Math.floor(-oy / T));
+    const x1 = Math.min(r.w, x0 + Math.ceil(IS.W / T) + 2), y1 = Math.min(r.h, y0 + Math.ceil(IS.H / T) + 2);
+    for (let ty = y0; ty < y1; ty++) for (let tx = x0; tx < x1; tx++) {
+      IS.Art.tile(c, Wd.grid[ty][tx], tx * T + ox, ty * T + oy, tx, ty, r.theme, Wd.tileAt(tx, ty + 1), Wd.t);
+    }
+    // interactable hints (unread things sparkle)
+    if (IS.settings.hints) for (const o of r.obj || []) {
+      if (!o.hint) continue;
+      const e = IS.D.pick(o.d); if (!e || !e.id || IS.G.has('seen.' + e.id) || IS.G.has('L.seen.' + e.id)) continue;
+      const s = Math.sin(Wd.t * 4 + o.x) > 0.6;
+      if (s) { c.fillStyle = '#fff6c8'; c.fillRect(o.x * T + ox + 7, o.y * T + oy + 2, 2, 2); c.fillRect(o.x * T + ox + 6, o.y * T + oy + 3, 4, 0.5); }
+    }
+    // entities, depth sorted
+    const ents = Wd.npcs.map((n) => ({ y: n.y, n })).concat([{ y: p.y, me: true }]).sort((a, b) => a.y - b.y);
+    for (const e of ents) {
+      if (e.me) { IS.Art.char(c, IS.Art.PLAYER, p.x + ox, p.y + oy, p.dir, p.moving ? (Math.floor(p.anim) % 2) : 0); continue; }
+      const n = e.n, d = IS.data.npcs[n.id];
+      if (!d) continue;
+      const ghost = n.ghost || d.ghost;
+      IS.Art.char(c, d.look, n.x + ox, n.y + oy, n.dir, (n.vx || n.vy) ? Math.floor(n.anim) % 2 : 0,
+        ghost ? { alpha: 0.55 + Math.sin(Wd.t * 2) * 0.15, glow: true } : null);
+    }
+    // dust motes
+    c.fillStyle = 'rgba(255,240,200,0.35)';
+    for (const q of Wd.parts) c.fillRect(Math.round(q.x - Wd.cam.x), Math.round(q.y - Wd.cam.y), 1, 1);
+
+    Wd.lighting(c, ox, oy);
+  };
+
+  Wd.lighting = function (c, ox, oy) {
+    const S = IS.S, r = Wd.room, t = S.time;
+    let tint = null, dark = 0;
+    if (r.theme === 'sub') dark = 0.6;
+    else if (r.theme === 'anomaly') tint = 'rgba(40,120,140,0.12)';
+    else if (t < 540) tint = 'rgba(255,190,140,0.08)';
+    else if (t >= 1020 && t < 1140) tint = 'rgba(255,140,60,0.14)';
+    else if (t >= 1140 && t < 1260) { tint = 'rgba(70,40,130,0.22)'; dark = 0.15; }
+    else if (t >= 1260) { tint = 'rgba(20,20,70,0.3)'; dark = r.outdoor ? 0.35 : 0.5; }
+    if (tint) { c.fillStyle = tint; c.fillRect(0, 0, IS.W, IS.H); }
+    if (dark > 0) {
+      const g = c.createRadialGradient(Wd.p.x + ox, Wd.p.y + oy - 8, 10, Wd.p.x + ox, Wd.p.y + oy - 8, 110);
+      g.addColorStop(0, 'rgba(0,0,10,0)'); g.addColorStop(1, 'rgba(0,0,10,' + dark + ')');
+      c.fillStyle = g; c.fillRect(0, 0, IS.W, IS.H);
+    }
+    // vignette
+    const v = c.createRadialGradient(IS.W / 2, IS.H / 2, IS.H * 0.45, IS.W / 2, IS.H / 2, IS.W * 0.62);
+    v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(0,0,0,0.38)');
+    c.fillStyle = v; c.fillRect(0, 0, IS.W, IS.H);
+    if (Wd.fade > 0) { c.fillStyle = 'rgba(0,0,0,' + Wd.fade + ')'; c.fillRect(0, 0, IS.W, IS.H); }
+  };
+
+  // horizontal slice displacement: the "reality is tearing" effect
+  Wd.postGlitch = function (canvas, ctx, amount) {
+    const fx = IS.settings.fx; if (!fx || amount <= 0.02) return;
+    const a = amount * (fx === 1 ? 0.35 : 1);
+    const n = Math.floor(a * 7);
+    for (let i = 0; i < n; i++) {
+      const y = Math.floor(Math.random() * IS.H), h = 2 + Math.floor(Math.random() * 8);
+      const dx = Math.round((Math.random() - 0.5) * 18 * a);
+      ctx.drawImage(canvas, 0, y, IS.W, h, dx, y, IS.W, h);
+    }
+    if (fx === 2 && Math.random() < a * 0.3) { ctx.fillStyle = 'rgba(120,240,255,' + (0.08 * a).toFixed(3) + ')'; ctx.fillRect(0, 0, IS.W, IS.H); }
+  };
+
+  IS.Wd = Wd;
+})(window.IS);
+
+</script>
+<script>/* src/ui.js */
+// UI layer: drawing helpers, toasts, and every scene (title, world, dialogue,
+// notebook/evidence board, menus, settings, endings). UI draws in a 320x180
+// virtual space on the full-resolution canvas so text stays crisp.
+(function (IS) {
+  const UI = { toasts: [] };
+  const I = () => IS.I;
+
+  UI.col = function () {
+    const hc = IS.settings.contrast;
+    return {
+      ink: hc ? '#ffffff' : '#f1e9d2', dim: hc ? '#d0d0d0' : '#a49ab4', bg: hc ? 'rgba(0,0,0,0.97)' : 'rgba(17,13,27,0.93)',
+      edge: hc ? '#ffffff' : '#d9cfb6', acc: hc ? '#ffd84a' : '#e8b84a', red: '#e0675d', teal: '#7fd3dc', sel: hc ? 'rgba(255,216,74,0.25)' : 'rgba(232,184,74,0.16)'
+    };
+  };
+  UI.fs = (n) => n + (IS.settings.big ? 2 : 0);
+  UI.font = function (c, px) {
+    if (IS.settings.plain) c.font = Math.round(UI.fs(px) * 0.78 * 10) / 10 + 'px system-ui, -apple-system, Segoe UI, sans-serif';
+    else if (IS.fontFallback) c.font = Math.round(UI.fs(px) * 0.8 * 10) / 10 + 'px Menlo, Consolas, "DejaVu Sans Mono", monospace'; // VT323 unavailable offline
+    else c.font = UI.fs(px) + 'px VT323, monospace';
+  };
+  UI.text = function (c, s, x, y, col, px, align) {
+    UI.font(c, px || 11); c.fillStyle = col || UI.col().ink; c.textAlign = align || 'left'; c.textBaseline = 'top';
+    c.fillText(s, x, y);
+  };
+  UI.wrap = function (c, s, maxW, px) {
+    UI.font(c, px || 11);
+    const out = [];
+    for (const para of String(s).split('\n')) {
+      let line = '';
+      for (const w of para.split(' ')) {
+        const tryL = line ? line + ' ' + w : w;
+        if (c.measureText(tryL).width > maxW && line) { out.push(line); line = w; } else line = tryL;
+      }
+      out.push(line);
+    }
+    return out;
+  };
+  UI.panel = function (c, x, y, w, h, opts) {
+    const k = UI.col();
+    c.fillStyle = k.bg; c.fillRect(x, y, w, h);
+    c.strokeStyle = (opts && opts.edge) || k.edge; c.lineWidth = 1; c.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+    c.strokeStyle = 'rgba(255,255,255,0.08)'; c.strokeRect(x + 2.5, y + 2.5, w - 5, h - 5);
+  };
+  // generic vertical list; returns nothing, just draws
+  UI.list = function (c, items, sel, x, y, w, rowH, opts) {
+    const k = UI.col(); opts = opts || {};
+    const inkC = opts.ink || k.ink, dimC = opts.dim || k.dim, accC = opts.acc || k.acc;
+    const max = opts.max || 99, start = Math.max(0, Math.min(sel - Math.floor(max / 2), items.length - max));
+    for (let i = start; i < Math.min(items.length, start + max); i++) {
+      const yy = y + (i - start) * rowH, it = items[i];
+      const label = typeof it === 'string' ? it : it.label;
+      const dis = it && it.disabled;
+      if (i === sel) { c.fillStyle = opts.selBg || k.sel; c.fillRect(x - 2, yy - 1, w, rowH); UI.text(c, '▸', x, yy, accC, opts.px); }
+      UI.text(c, label, x + 9, yy, dis ? dimC : (i === sel ? accC : inkC), opts.px);
+      if (it && it.right) UI.text(c, it.right, x + w - 6, yy, i === sel ? accC : dimC, opts.px, 'right');
+    }
+    if (start > 0) UI.text(c, '▲', x + w - 8, y - 9, dimC, 9);
+    if (start + max < items.length) UI.text(c, '▼', x + w - 8, y + max * rowH - 2, dimC, 9);
+  };
+  UI.navList = function (sel, n) {
+    if (n <= 0) return 0;
+    if (I().rep('up')) { sel = (sel - 1 + n) % n; IS.A.sfx('select'); }
+    if (I().rep('down')) { sel = (sel + 1) % n; IS.A.sfx('select'); }
+    return sel;
+  };
+
+  UI.toast = function (text, kind) { UI.toasts.push({ text, kind: kind || 'info', t: 0 }); if (UI.toasts.length > 5) UI.toasts.shift(); };
+  UI.drawToasts = function (c, dt) {
+    const k = UI.col();
+    let y = 26;
+    for (const t of UI.toasts) {
+      t.t += dt;
+      const a = t.t < 0.25 ? t.t / 0.25 : t.t > 3.2 ? Math.max(0, 1 - (t.t - 3.2) / 0.5) : 1;
+      c.globalAlpha = a;
+      UI.font(c, 10);
+      const w = Math.min(190, c.measureText(t.text).width + 14);
+      const x = IS.W - w - 6 + (1 - a) * 20;
+      const col = t.kind === 'clue' ? k.teal : t.kind === 'ach' ? k.acc : t.kind === 'bond' ? k.red : k.ink;
+      UI.panel(c, x, y, w, 14, { edge: col });
+      UI.text(c, t.text, x + 7, y + 2, col, 10);
+      c.globalAlpha = 1; y += 17;
+    }
+    UI.toasts = UI.toasts.filter((t) => t.t < 3.7);
+  };
+
+  // =============== dialogue ===============
+  const D = {};
+  D.ok = (c) => IS.G.ok(c);
+  // resolve a scene id: dynamic scenes pick from a conditional list each time
+  D.scene = function (id) {
+    const dl = IS.data.dynamicScenes && IS.data.dynamicScenes[id];
+    if (dl) return D.pick(IS.data[dl]);
+    const e = IS.data.scenes[id]; if (e && !e.id) e.id = id;
+    return e || null;
+  };
+  D.pick = function (list) {
+    if (!list) return null;
+    if (typeof list === 'string') return D.scene(list);
+    if (!Array.isArray(list)) return list;
+    for (const e of list) {
+      if (!IS.G.ok(e.if)) continue;
+      if (e.once && e.id && IS.G.has('L.seen.' + e.id)) continue;
+      if (e.onceEver && e.id && IS.G.has('seen.' + e.id)) continue;
+      return e;
+    }
+    return null;
+  };
+  D.run = function (entry, npc) {
+    if (typeof entry === 'string') entry = D.scene(entry);
+    if (!entry) return false;
+    IS.push(new DialogueScene(entry, npc)); return true;
+  };
+  D.sub = function (s) {
+    const S = IS.S;
+    return s.replace(/\{name\}/g, S.name).replace(/\{loop\}/g, S.loop).replace(/\{time\}/g, IS.fmtTime(S.time));
+  };
+  function parseLine(l) {
+    const m = /^@(\w+)\s+([\s\S]*)$/.exec(l);
+    return m ? { sp: m[1], text: D.sub(m[2]) } : { sp: null, text: D.sub(l) };
+  }
+  IS.D = D;
+
+  class DialogueScene {
+    constructor(entry, npc) { this.npc = npc; this.goto = null; this.start(entry); }
+    start(e) {
+      this.entry = e;
+      if (e.id) { IS.G.set('L.seen.' + e.id); if (e.onceEver) IS.G.set('seen.' + e.id); IS.G.set('seen.' + e.id); }
+      if (this.npc) IS.G.set('met.' + this.npc.id);
+      let lines = e.lines;
+      if (e.pool) lines = e.pool[Math.floor(IS.loopRand((e.id || 'pool') + 'p') * e.pool.length)];
+      this.queue = (lines || []).map(parseLine);
+      this.doFx = e.do; this.choiceList = e.choices; this.goto = e.goto || null;
+      this.choices = null; this.line = null;
+      this.next();
+    }
+    next() {
+      if (this.queue.length) { this.line = this.queue.shift(); this.shown = 0; this.blipT = 0; return; }
+      if (this.doFx) { const f = this.doFx; this.doFx = null; IS.G.apply(f); }
+      if (this.choiceList) {
+        const cs = this.choiceList.filter((ch) => IS.G.ok(ch.if)); this.choiceList = null;
+        if (cs.length) { this.choices = cs; this.sel = 0; if (this.line) this.shown = 1e9; return; }
+      }
+      if (this.goto) { const g = this.goto; this.goto = null; const e = D.scene(g); if (e) return this.start(e); }
+      IS.pop();
+    }
+    choose(ch) {
+      IS.A.sfx('confirm'); this.choices = null;
+      this.queue = (ch.lines || []).map(parseLine);
+      this.doFx = ch.do; this.choiceList = ch.choices || null; this.goto = ch.goto || null;
+      this.line = null; this.next();
+    }
+    update(dt) {
+      const In = I();
+      if (this.choices) {
+        this.sel = UI.navList(this.sel, this.choices.length);
+        if (In.pressed.ok) this.choose(this.choices[this.sel]);
+        return;
+      }
+      if (!this.line) return;
+      const speeds = [28, 50, 95, 1e6];
+      const len = this.line.text.length;
+      const prev = Math.floor(this.shown);
+      this.shown = Math.min(len, this.shown + speeds[IS.settings.textSpeed] * dt);
+      if (Math.floor(this.shown) > prev && Math.floor(this.shown) % 2 === 0 && this.line.text[Math.floor(this.shown) - 1] !== ' ') {
+        const n = this.line.sp && (IS.data.npcs[this.line.sp] || IS.data.speakers[this.line.sp]);
+        IS.A.sfx('blip', n ? n.voice : (this.line.sp === 'you' ? 700 : 420));
+      }
+      if (In.pressed.ok || In.pressed.back) {
+        if (this.shown < len) this.shown = len; else { IS.A.sfx('select'); this.next(); }
+      }
+    }
+    drawUI(c) {
+      const k = UI.col();
+      const ln = this.line;
+      const bx = 8, by = 124, bw = 304, bh = 50;
+      if (ln) {
+        UI.panel(c, bx, by, bw, bh);
+        let tx = bx + 10;
+        const sp = ln.sp, npc = sp && IS.data.npcs[sp], spk = sp && IS.data.speakers[sp];
+        if (npc || spk || sp === 'you') {
+          const look = npc ? npc.look : sp === 'you' ? IS.Art.PLAYER : null;
+          const img = IS.Art.portrait(sp, look, spk && spk.portrait);
+          c.fillStyle = 'rgba(255,255,255,0.05)'; c.fillRect(bx + 6, by + 6, 38, 38);
+          c.imageSmoothingEnabled = false;
+          if (npc && npc.ghost) c.globalAlpha = 0.7;
+          c.drawImage(img, bx + 7, by + 7, 36, 36); c.globalAlpha = 1;
+          tx = bx + 52;
+          const name = npc ? npc.name : spk ? spk.name : IS.S.name;
+          UI.font(c, 10); const nw = c.measureText(name).width + 12;
+          UI.panel(c, bx + 4, by - 12, nw, 13, { edge: k.acc });
+          UI.text(c, name, bx + 10, by - 11, k.acc, 10);
+        }
+        const lines = UI.wrap(c, ln.text, bw - (tx - bx) - 10, 11);
+        let left = Math.floor(this.shown);
+        lines.slice(0, 4).forEach((l, i) => {
+          const part = l.slice(0, Math.max(0, left)); left -= l.length + 1;
+          UI.text(c, part, tx, by + 6 + i * 10.5, sp ? k.ink : '#d8d0e8', 11);
+        });
+        if (!this.choices && this.shown >= ln.text.length && Math.floor(performance.now() / 400) % 2) UI.text(c, '▼', bx + bw - 12, by + bh - 11, k.acc, 9);
+      }
+      if (this.choices) {
+        UI.font(c, 11);
+        const w = Math.min(240, Math.max(...this.choices.map((ch) => c.measureText(ch.t).width)) + 26);
+        const h = this.choices.length * 12 + 8;
+        const x = IS.W - w - 10, y = (ln ? by : 170) - h - 4;
+        UI.panel(c, x, y, w, h, { edge: k.acc });
+        UI.list(c, this.choices.map((ch) => ch.t), this.sel, x + 6, y + 4, w - 8, 12);
+      }
+    }
+  }
+  UI.DialogueScene = DialogueScene;
+
+  // =============== world ===============
+  class WorldScene {
+    update(dt) {
+      if (IS.top() !== this) return;
+      const S = IS.S;
+      if (IS.pendingEnding) { const e = IS.pendingEnding; IS.pendingEnding = null; IS.push(new EndingScene(e)); return; }
+      if (IS.pendingMidnight) { IS.pendingMidnight = false; IS.push(new MidnightScene()); return; }
+      if (IS.pendingCard) { const cd = IS.pendingCard; IS.pendingCard = null; IS.push(new CardScene(cd)); return; }
+      if (IS.pendingWarp) { const w = IS.pendingWarp; IS.pendingWarp = null; IS.A.sfx('door'); IS.Wd.enter(w[0], w[1], w[2], w[3]); return; }
+      if (IS.pendingScene) { const s = IS.pendingScene; IS.pendingScene = null; IS.D.run(s); return; }
+      if (I().pressed.menu) { IS.A.sfx('confirm'); IS.push(new PauseScene()); return; }
+      if (I().pressed.note) { IS.A.sfx('confirm'); IS.push(new NotebookScene()); return; }
+      IS.Wd.update(dt);
+      S.x = Math.floor(IS.Wd.p.x / 16); S.y = Math.floor((IS.Wd.p.y - 1) / 16); S.dir = IS.Wd.p.dir;
+    }
+    drawLo(c) { IS.Wd.draw(c); }
+    drawUI(c) {
+      const k = UI.col(), S = IS.S;
+      if (!(IS.top() instanceof DialogueScene) || true) {
+        UI.panel(c, 4, 4, 92, 25);
+        UI.text(c, IS.fmtTime(S.time), 10, 5, S.time >= 1380 ? k.red : k.ink, 12);
+        UI.text(c, 'THU', 90, 7, k.dim, 9, 'right');
+        UI.text(c, 'Loop ' + S.loop + ' · ' + IS.G.period(S.time), 10, 17, k.acc, 9);
+      }
+      if (IS.Wd.titleT > 0 && IS.Wd.title) {
+        c.globalAlpha = Math.min(1, IS.Wd.titleT);
+        UI.text(c, IS.Wd.title, IS.W / 2, 12, k.ink, 14, 'center');
+        c.fillStyle = k.acc; c.fillRect(IS.W / 2 - 20, 27, 40, 1);
+        c.globalAlpha = 1;
+      }
+    }
+  }
+  UI.WorldScene = WorldScene;
+
+  UI.startWorld = function (scene) {
+    const S = IS.S;
+    IS.replaceAll(new WorldScene());
+    IS.Wd.enter(S.room, S.x, S.y, S.dir);
+    if (scene) IS.pendingScene = scene;
+  };
+
+  // =============== cards / midnight / endings ===============
+  class CardScene {
+    constructor(cd) { this.cd = cd; this.t = 0; if (cd.sfx) IS.A.sfx(cd.sfx); }
+    update(dt) { this.t += dt; if (this.t > 0.6 && (I().pressed.ok || this.t > (this.cd.dur || 2.8))) IS.pop(); }
+    drawUI(c) {
+      const k = UI.col(), a = Math.min(1, this.t * 2, Math.max(0, ((this.cd.dur || 2.8) - this.t) * 2));
+      c.globalAlpha = a * 0.85; c.fillStyle = '#05040a'; c.fillRect(0, 0, IS.W, IS.H); c.globalAlpha = a;
+      UI.text(c, this.cd.big, IS.W / 2, 70, k.ink, 24, 'center');
+      c.fillStyle = k.acc; c.fillRect(IS.W / 2 - 30, 96, 60, 1);
+      UI.text(c, this.cd.small || '', IS.W / 2, 102, k.acc, 12, 'center');
+      c.globalAlpha = 1;
+    }
+  }
+  UI.CardScene = CardScene;
+
+  class MidnightScene {
+    constructor() { this.t = 0; this.done = false; IS.A.stop(); IS.A.sfx('bell'); }
+    update(dt) {
+      this.t += dt;
+      if (this.t > 1.6 && !this.loopSfx) { this.loopSfx = true; IS.A.sfx('loop'); }
+      if (this.t > 3.6 && !this.done) {
+        this.done = true;
+        IS.G.resetLoop();
+        IS.pop();
+        if (IS.pendingEnding) return;
+        const S = IS.S;
+        IS.Wd.enter(S.room, S.x, S.y, S.dir, { silent: true });
+        IS.pendingCard = { big: 'LOOP ' + S.loop, small: 'Thursday, October 13', dur: 2.6 };
+        IS.pendingScene = 'loop_start';
+      }
+    }
+    drawUI(c) {
+      const k = UI.col();
+      const a = Math.min(1, this.t / 1.2);
+      c.fillStyle = 'rgba(4,3,8,' + a + ')'; c.fillRect(0, 0, IS.W, IS.H);
+      UI.text(c, '12:00 AM', IS.W / 2, 72, k.red, 22, 'center');
+      if (this.t > 1.4) UI.text(c, IS.S.phase >= 2 ? 'Not again.' : 'The bell rings once. Everything stops.', IS.W / 2, 100, k.dim, 11, 'center');
+    }
+  }
+
+  class EndingScene {
+    constructor(id) {
+      this.e = IS.data.endings[id]; this.id = id; this.i = 0; this.t = 0;
+      IS.A.play(this.e.music || 'title');
+      IS.meta.endings[id] = IS.meta.endings[id] || Date.now(); IS.G.saveMeta();
+      IS.G.ach('end_' + id);
+    }
+    update(dt) {
+      this.t += dt;
+      if (this.t > 0.5 && I().pressed.ok) { this.t = 0; this.i++; IS.A.sfx('select'); }
+      if (this.i > this.e.lines.length) { IS.replaceAll(new TitleScene()); }
+    }
+    drawUI(c) {
+      const k = UI.col();
+      c.fillStyle = '#05040a'; c.fillRect(0, 0, IS.W, IS.H);
+      if (this.i < this.e.lines.length) {
+        c.globalAlpha = Math.min(1, this.t * 1.5);
+        const ls = UI.wrap(c, this.e.lines[this.i], 250, 12);
+        ls.forEach((l, j) => UI.text(c, l, IS.W / 2, 80 - ls.length * 6 + j * 13, k.ink, 12, 'center'));
+        c.globalAlpha = 1;
+        UI.text(c, '▼', IS.W / 2, 160, k.dim, 9, 'center');
+      } else {
+        c.globalAlpha = Math.min(1, this.t);
+        UI.text(c, 'ENDING', IS.W / 2, 56, k.dim, 11, 'center');
+        UI.text(c, this.e.title, IS.W / 2, 70, k.acc, 24, 'center');
+        const found = Object.keys(IS.meta.endings).length, total = Object.keys(IS.data.endings).length;
+        UI.text(c, 'Endings found: ' + found + ' / ' + total, IS.W / 2, 104, k.ink, 11, 'center');
+        UI.text(c, 'Press OK to return to the title', IS.W / 2, 150, k.dim, 10, 'center');
+        c.globalAlpha = 1;
+      }
+    }
+  }
+  UI.EndingScene = EndingScene;
+
+  // =============== title & new game ===============
+  class TitleScene {
+    constructor() { this.sel = 0; this.t = 0; this.motes = []; IS.A.play('title'); this.build(); }
+    build() {
+      const latest = latestSave();
+      this.items = [];
+      if (latest) this.items.push({ label: 'Continue', act: () => { IS.G.load(latest); UI.startWorld(); } });
+      this.items.push({ label: 'New Game', act: () => IS.push(new NameScene()) });
+      this.items.push({ label: 'Load Game', act: () => IS.push(new SlotScene('load')) });
+      this.items.push({ label: 'Settings', act: () => IS.push(new SettingsScene()) });
+      this.items.push({ label: 'Extras', act: () => IS.push(new ExtrasScene()) });
+    }
+    enter() { this.build(); }
+    update(dt) {
+      this.t += dt;
+      if (IS.top() !== this) return;
+      this.sel = UI.navList(this.sel, this.items.length);
+      if (I().pressed.ok) { IS.A.sfx('confirm'); this.items[this.sel].act(); }
+    }
+    drawLo(c) {
+      const t = this.t;
+      const g = c.createLinearGradient(0, 0, 0, IS.H); g.addColorStop(0, '#0c0a16'); g.addColorStop(1, '#1d1430');
+      c.fillStyle = g; c.fillRect(0, 0, IS.W, IS.H);
+      // endless corridor of lockers receding
+      for (let i = 0; i < 9; i++) {
+        const z = ((i + t * 0.25) % 9) / 9, s = 1 - z;
+        const w = 300 * s * s + 10, h = 150 * s * s + 6, x = IS.W / 2 - w / 2, y = 96 - h / 2;
+        c.strokeStyle = 'rgba(160,140,200,' + (0.05 + s * 0.22).toFixed(3) + ')'; c.strokeRect(Math.round(x) + 0.5, Math.round(y) + 0.5, Math.round(w), Math.round(h));
+      }
+      // clock
+      const cx = IS.W / 2, cy = 96;
+      c.fillStyle = '#e8dcc0'; c.beginPath(); c.arc(cx, cy, 15, 0, 7); c.fill();
+      c.fillStyle = '#1a1424'; c.beginPath(); c.arc(cx, cy, 13, 0, 7); c.fill();
+      c.fillStyle = '#e8dcc0';
+      for (let i = 0; i < 12; i++) { const a = i / 12 * Math.PI * 2; c.fillRect(Math.round(cx + Math.cos(a) * 11), Math.round(cy + Math.sin(a) * 11), 1, 1); }
+      const sec = (t * 0.9) % 1, jitter = sec > 0.92 ? Math.sin(t * 60) * 0.03 : 0;
+      const hand = (a, l, col) => { c.strokeStyle = col; c.lineWidth = 1; c.beginPath(); c.moveTo(cx, cy); c.lineTo(cx + Math.cos(a - Math.PI / 2) * l, cy + Math.sin(a - Math.PI / 2) * l); c.stroke(); };
+      hand((11 + 59 / 60) / 12 * Math.PI * 2, 7, '#e8dcc0');
+      hand(59 / 60 * Math.PI * 2 + jitter, 10, '#e8dcc0');
+      hand((0.98 + sec * 0.019) * Math.PI * 2, 11, '#e0675d');
+      if (Math.random() < 0.04) IS.Wd.postGlitch(c.canvas, c, 0.6);
+    }
+    drawUI(c) {
+      const k = UI.col();
+      UI.text(c, 'INFINITE', IS.W / 2, 14, k.ink, 30, 'center');
+      UI.text(c, 'S C H O O L', IS.W / 2, 40, k.acc, 15, 'center');
+      UI.text(c, 'Thursday never ends.', IS.W / 2, 57, k.dim, 10, 'center');
+      const w = 110, x = IS.W / 2 - w / 2, y = 118;
+      UI.list(c, this.items, this.sel, x + 8, y, w, 11);
+      UI.text(c, 'v' + IS.VERSION, 6, IS.H - 12, k.dim, 9);
+      const hint = I().mode === 'pad' ? 'A select · B back' : I().mode === 'touch' ? 'Tap A to select' : 'Arrows move · Enter selects';
+      UI.text(c, hint, IS.W - 6, IS.H - 12, k.dim, 9, 'right');
+    }
+  }
+  UI.TitleScene = TitleScene;
+
+  function latestSave() {
+    let best = null, bt = 0;
+    for (const s of ['auto', 1, 2, 3]) { const d = IS.G.slot(s); if (d && (d.savedAt || 0) > bt) { bt = d.savedAt; best = s; } }
+    return best;
+  }
+
+  class NameScene {
+    constructor() {
+      this.name = ''; this.r = 0; this.c = 0;
+      this.grid = ['ABCDEFGHIJ', 'KLMNOPQRST', 'UVWXYZ-\'. ', ['DEL', 'RANDOM', 'DONE']];
+    }
+    enter() { I().textMode = true; I().typed.length = 0; }
+    exit() { I().textMode = false; }
+    update(dt) {
+      const In = I();
+      for (const ch of In.typed) {
+        if (ch === '\b') this.name = this.name.slice(0, -1);
+        else if (/^[A-Za-z\-'. ]$/.test(ch) && this.name.length < 10) this.name += this.name.length ? ch.toLowerCase() : ch.toUpperCase();
+      }
+      In.typed.length = 0;
+      const row = this.grid[this.r], len = row.length;
+      if (In.rep('left')) { this.c = (this.c - 1 + len) % len; IS.A.sfx('select'); }
+      if (In.rep('right')) { this.c = (this.c + 1) % len; IS.A.sfx('select'); }
+      if (In.rep('up')) { this.r = (this.r + 3) % 4; this.c = Math.min(this.c, this.grid[this.r].length - 1); IS.A.sfx('select'); }
+      if (In.rep('down')) { this.r = (this.r + 1) % 4; this.c = Math.min(this.c, this.grid[this.r].length - 1); IS.A.sfx('select'); }
+      if (In.pressed.menu) { IS.pop(); return; }
+      if (In.pressed.back) { if (this.name) this.name = this.name.slice(0, -1); else IS.pop(); IS.A.sfx('back'); return; }
+      if (In.pressed.ok) {
+        const v = this.grid[this.r][this.c];
+        if (v === 'DEL') this.name = this.name.slice(0, -1);
+        else if (v === 'RANDOM') { const pool = ['Ash', 'Rowan', 'Kit', 'Sol', 'Juno', 'Ezra', 'Wren', 'Nico', 'Sage', 'Indy']; this.name = pool[Math.floor(Math.random() * pool.length)]; }
+        else if (v === 'DONE') { IS.A.sfx('confirm'); begin(this.name.trim() || 'Ash'); return; }
+        else if (this.name.length < 10) this.name += this.name.length ? v.toLowerCase() : v;
+        IS.A.sfx('select');
+      }
+    }
+    drawUI(c) {
+      const k = UI.col();
+      c.fillStyle = '#0c0a16'; c.fillRect(0, 0, IS.W, IS.H);
+      UI.text(c, 'Sign the attendance sheet:', IS.W / 2, 22, k.dim, 11, 'center');
+      UI.panel(c, IS.W / 2 - 70, 40, 140, 22, { edge: k.acc });
+      UI.text(c, (this.name || '') + (Math.floor(performance.now() / 400) % 2 ? '_' : ' '), IS.W / 2, 43, k.ink, 16, 'center');
+      for (let r = 0; r < 4; r++) {
+        const row = this.grid[r];
+        for (let i = 0; i < row.length; i++) {
+          const wide = r === 3, cw = wide ? 60 : 20;
+          const x = IS.W / 2 - (row.length * cw) / 2 + i * cw + cw / 2, y = 78 + r * 18;
+          const on = r === this.r && i === this.c;
+          if (on) { c.fillStyle = k.sel; c.fillRect(x - cw / 2 + 2, y - 2, cw - 4, 15); }
+          UI.text(c, row[i] === ' ' ? '␣' : row[i], x, y, on ? k.acc : k.ink, 12, 'center');
+        }
+      }
+      UI.text(c, 'Type, or pick letters. Blank = Ash', IS.W / 2, 160, k.dim, 9, 'center');
+    }
+  }
+
+  function begin(name) {
+    IS.G.newGame(name);
+    const r = IS.data.rooms.c2b; IS.S.x = r.spawn[0]; IS.S.y = r.spawn[1]; IS.S.dir = 1;
+    UI.startWorld('intro');
+    IS.pendingCard = null;
+    IS.G.save('auto');
+  }
+
+  // =============== pause ===============
+  class PauseScene {
+    constructor() { this.sel = 0; this.sub = null; }
+    items() {
+      return [
+        { label: 'Resume', act: () => IS.pop() },
+        { label: 'Notebook', act: () => { IS.pop(); IS.push(new NotebookScene()); } },
+        { label: 'Wait…', act: () => { this.sub = waitItems(); this.ssel = 0; } },
+        { label: 'Save Game', act: () => IS.push(new SlotScene('save')) },
+        { label: 'Load Game', act: () => IS.push(new SlotScene('load')) },
+        { label: 'Settings', act: () => IS.push(new SettingsScene()) },
+        { label: 'Quit to Title', act: () => { IS.G.save('auto'); IS.replaceAll(new TitleScene()); } }
+      ];
+    }
+    update() {
+      const In = I();
+      if (this.sub) {
+        this.ssel = UI.navList(this.ssel, this.sub.length);
+        if (In.back()) { this.sub = null; IS.A.sfx('back'); return; }
+        if (In.pressed.ok) { const it = this.sub[this.ssel]; if (!it.disabled) { IS.A.sfx('confirm'); it.act(); } else IS.A.sfx('wrong'); }
+        return;
+      }
+      const its = this.items();
+      this.sel = UI.navList(this.sel, its.length);
+      if (In.back()) { IS.A.sfx('back'); IS.pop(); return; }
+      if (In.pressed.ok) { IS.A.sfx('confirm'); its[this.sel].act(); }
+    }
+    drawUI(c) {
+      const k = UI.col(), S = IS.S;
+      c.fillStyle = 'rgba(5,4,10,0.55)'; c.fillRect(0, 0, IS.W, IS.H);
+      UI.panel(c, 16, 36, 110, 100);
+      UI.text(c, 'PAUSED', 26, 40, k.acc, 12);
+      UI.list(c, this.items(), this.sel, 22, 56, 100, 11);
+      UI.panel(c, 136, 36, 168, 100);
+      const room = IS.data.rooms[S.room];
+      const rows = [['Name', S.name], ['Location', room ? room.name : '?'], ['Time', IS.fmtTime(S.time)], ['Loop', String(S.loop)],
+        ['Phase', S.phase + ' · ' + (IS.data.phases[S.phase] || '')], ['Clues', S.clues.length + ' / ' + Object.keys(IS.data.clues).length],
+        ['Deductions', IS.data.deductions.filter((d) => IS.G.has('d.' + d.id)).length + ' / ' + IS.data.deductions.length],
+        ['Play time', Math.floor(S.playMs / 60000) + ' min']];
+      rows.forEach((r, i) => { UI.text(c, r[0], 144, 42 + i * 11, k.dim, 10); UI.text(c, r[1], 296, 42 + i * 11, k.ink, 10, 'right'); });
+      if (this.sub) {
+        UI.panel(c, 60, 60, 200, this.sub.length * 11 + 20, { edge: k.acc });
+        UI.text(c, 'Pass the time until…', 68, 63, k.acc, 10);
+        UI.list(c, this.sub, this.ssel, 66, 76, 190, 11);
+      }
+    }
+  }
+  function waitItems() {
+    const S = IS.S, list = [];
+    const jump = (t) => () => {
+      S.time = Math.max(S.time, t); IS.Wd.placeNPCs(true); IS.Wd.music(); IS.Wd.fade = 1;
+      while (IS.top() !== IS.stack[0]) IS.pop();
+    };
+    const nb = IS.data.bells.find((b) => b[0] > S.time);
+    list.push({ label: nb ? 'The next bell (' + IS.fmtTime(nb[0]) + ')' : 'The next bell', act: jump(nb ? nb[0] : S.time), disabled: !nb });
+    [[900, 'After school'], [1080, 'Evening'], [1260, 'Night']].forEach(([t, n]) => list.push({ label: n + ' (' + IS.fmtTime(t) + ')', act: jump(t), disabled: S.time >= t }));
+    list.push({ label: 'Midnight (end the day)', act: () => { while (IS.top() !== IS.stack[0]) IS.pop(); IS.pendingMidnight = true; } });
+    if (S.items.includes('watch')) list.push({ label: 'Wind the Second Hand (restart now)', act: () => { while (IS.top() !== IS.stack[0]) IS.pop(); IS.pendingMidnight = true; } });
+    if (IS.Wd.room && IS.Wd.room.timeless) list.forEach((x) => { x.disabled = true; });
+    return list;
+  }
+
+  // =============== notebook & evidence board ===============
+  const TABS = ['Goals', 'Clues', 'Board', 'People', 'Map', 'Items'];
+  class NotebookScene {
+    constructor(tab) { this.tab = tab || 0; this.sel = 0; this.pick = null; this.msg = null; }
+    clueList() { return IS.S.clues.map((id) => Object.assign({ id }, IS.data.clues[id])); }
+    people() {
+      const S = IS.S;
+      return Object.keys(IS.data.npcs).filter((id) => IS.data.npcs[id].profile !== false && (S.flags['met.' + id] || S.insight[id] > 0)).map((id) => Object.assign({ id }, IS.data.npcs[id]));
+    }
+    update() {
+      const In = I();
+      if (In.back() || In.pressed.note) {
+        if (this.pick != null && this.tab === 2 && !In.pressed.note) { this.pick = null; IS.A.sfx('back'); return; }
+        IS.A.sfx('back'); IS.pop(); return;
+      }
+      if (In.rep('left')) { this.tab = (this.tab + TABS.length - 1) % TABS.length; this.sel = 0; this.pick = null; IS.A.sfx('select'); }
+      if (In.rep('right')) { this.tab = (this.tab + 1) % TABS.length; this.sel = 0; this.pick = null; IS.A.sfx('select'); }
+      const n = this.tab === 1 || this.tab === 2 ? IS.S.clues.length : this.tab === 3 ? this.people().length : this.tab === 5 ? IS.S.items.length : 0;
+      this.sel = UI.navList(this.sel, n);
+      if (this.tab === 1 && n) delete IS.S.newClues[IS.S.clues[this.sel]];
+      if (this.tab === 2 && In.pressed.ok && n) {
+        const id = IS.S.clues[this.sel];
+        if (this.pick == null) { this.pick = id; IS.A.sfx('confirm'); }
+        else if (this.pick === id) { this.pick = null; IS.A.sfx('back'); }
+        else {
+          const r = IS.G.deduce(this.pick, id);
+          this.pick = null;
+          if (r && r.ok) { IS.pop(); IS.D.run({ lines: ['DEDUCTION — ' + r.d.title.toUpperCase(), r.d.text] }); return; }
+          else if (r && r.already) { this.msg = 'You already worked that out: ' + r.d.title + '.'; IS.A.sfx('select'); }
+          else { this.msg = "These don't connect. Not yet."; IS.A.sfx('wrong'); }
+        }
+      }
+    }
+    drawUI(c) {
+      const k = UI.col(), S = IS.S;
+      c.fillStyle = 'rgba(5,4,10,0.6)'; c.fillRect(0, 0, IS.W, IS.H);
+      // paper notebook
+      c.fillStyle = IS.settings.contrast ? '#000' : '#efe6cf'; c.fillRect(10, 10, 300, 160);
+      c.fillStyle = IS.settings.contrast ? '#000' : '#e2d6b8'; for (let y = 34; y < 168; y += 11) c.fillRect(12, y, 296, 0.5);
+      c.fillStyle = '#c0574d'; c.fillRect(34, 10, 0.6, 160);
+      const ink = IS.settings.contrast ? '#fff' : '#2a2238', faint = IS.settings.contrast ? '#ccc' : '#7a6f88', red = '#b5433a';
+      TABS.forEach((t, i) => {
+        const x = 40 + i * 44;
+        if (i === this.tab) { c.fillStyle = k.acc; c.fillRect(x - 3, 13, 42, 13); }
+        UI.text(c, t, x + 18, 13, i === this.tab ? '#1a1424' : faint, 11, 'center');
+      });
+      UI.text(c, '◀ ▶', 300, 14, faint, 9, 'right');
+      const L = 40, Y = 34;
+      const P = { ink, dim: faint, acc: red, selBg: 'rgba(181,67,58,0.12)' };
+      if (this.tab === 0) {
+        const goal = IS.data.objectives.find((o) => IS.G.ok(o.if));
+        UI.text(c, 'CURRENT LEAD', L, Y, red, 10);
+        UI.wrap(c, goal ? goal.text : 'Keep exploring.', 255, 11).forEach((l, i) => UI.text(c, l, L, Y + 11 + i * 11, ink, 11));
+        UI.text(c, 'Phase ' + S.phase + ' — ' + (IS.data.phases[S.phase] || ''), L, Y + 56, ink, 11);
+        UI.text(c, 'Loop ' + S.loop + '   ·   ' + S.clues.length + ' clues   ·   ' + IS.data.deductions.filter((d) => IS.G.has('d.' + d.id)).length + ' deductions', L, Y + 67, faint, 10);
+        UI.text(c, 'Tip: connect two clues on the Board to make a deduction.', L, Y + 89, faint, 10);
+        UI.text(c, 'What you learn survives midnight. What you carry does not.', L, Y + 100, faint, 10);
+      } else if (this.tab === 1 || this.tab === 2) {
+        const list = this.clueList();
+        if (!list.length) { UI.text(c, 'Nothing written yet. Look around. Talk to people.', L, Y, faint, 11); return; }
+        const items = list.map((cl) => ({ label: (S.newClues[cl.id] ? '• ' : '') + cl.title + (this.pick === cl.id ? '  ✱' : '') }));
+        UI.list(c, items, this.sel, L - 6, Y, 128, 11, Object.assign({ max: 11 }, P));
+        const cl = list[this.sel];
+        c.fillStyle = IS.settings.contrast ? '#000' : '#efe6cf'; c.fillRect(170, 32, 136, 134);
+        UI.text(c, (cl.cat || '').toUpperCase(), 174, Y, red, 9);
+        UI.wrap(c, cl.title, 128, 12).forEach((l, i) => UI.text(c, l, 174, Y + 9 + i * 11, ink, 12));
+        UI.wrap(c, cl.text, 128, 10).slice(0, 9).forEach((l, i) => UI.text(c, l, 174, Y + 32 + i * 10, ink, 10));
+        if (this.tab === 2) {
+          const made = IS.data.deductions.filter((d) => IS.G.has('d.' + d.id));
+          c.fillStyle = IS.settings.contrast ? '#000' : '#efe6cf'; c.fillRect(170, 128, 136, 38);
+          UI.text(c, this.pick ? 'Now pick a second clue…' : 'Pick a clue to pin.', 174, 130, red, 10);
+          UI.text(c, this.msg || ('Red string tied: ' + made.length + ' / ' + IS.data.deductions.length), 174, 142, faint, 9);
+          if (made.length) UI.text(c, 'Latest: ' + made[made.length - 1].title, 174, 152, ink, 9);
+        }
+      } else if (this.tab === 3) {
+        const ps = this.people();
+        if (!ps.length) { UI.text(c, 'You have not really met anyone yet.', L, Y, faint, 11); return; }
+        UI.list(c, ps.map((p) => p.short || p.name), this.sel, L - 6, Y, 90, 11, Object.assign({ max: 11 }, P));
+        const p = ps[Math.min(this.sel, ps.length - 1)];
+        c.fillStyle = IS.settings.contrast ? '#000' : '#efe6cf'; c.fillRect(132, 32, 174, 134);
+        c.imageSmoothingEnabled = false; c.drawImage(IS.Art.portrait(p.id, p.look), 136, Y, 28, 28);
+        UI.text(c, p.name, 170, Y, ink, 12); UI.text(c, p.role || '', 170, Y + 11, faint, 10);
+        const b = S.bonds[p.id] || 0;
+        UI.text(c, '♥'.repeat(b) + '♡'.repeat(5 - b) + (IS.G.isAware(p.id) ? '   remembers you' : ''), 170, Y + 21, red, 10);
+        let yy = Y + 36;
+        for (const note of p.notes || []) {
+          if (!IS.G.ok(note.if)) continue;
+          for (const l of UI.wrap(c, '— ' + note.text, 168, 10)) { if (yy > 160) break; UI.text(c, l, 136, yy, ink, 10); yy += 10; }
+        }
+      } else if (this.tab === 4) {
+        const floors = {};
+        for (const id in IS.data.rooms) { const r = IS.data.rooms[id]; const f = r.floor || '?'; (floors[f] = floors[f] || []).push(Object.assign({ id }, r)); }
+        let x = L, yy = Y;
+        for (const f of ['2F', '1F', 'Grounds', 'Hidden', 'Below']) {
+          if (!floors[f]) continue;
+          const vis = floors[f].filter((r) => S.visited[r.id]);
+          if (!vis.length && (f === 'Hidden' || f === 'Below')) continue;
+          UI.text(c, f, x, yy, red, 10); yy += 10;
+          for (const r of floors[f]) {
+            const seen = S.visited[r.id];
+            if (!seen && r.secret) continue;
+            UI.text(c, (r.id === S.room ? '◉ ' : seen ? '· ' : '? ') + (seen ? r.name : '???'), x + 4, yy, r.id === S.room ? red : seen ? ink : faint, 10); yy += 9.5;
+            if (yy > 160) { yy = Y; x += 92; }
+          }
+          yy += 3; if (yy > 150) { yy = Y; x += 92; }
+        }
+      } else if (this.tab === 5) {
+        if (!S.items.length) { UI.text(c, 'Your pockets are empty.', L, Y, faint, 11); return; }
+        UI.list(c, S.items.map((i) => IS.data.items[i].name), this.sel, L - 6, Y, 110, 11, P);
+        const it = IS.data.items[S.items[Math.min(this.sel, S.items.length - 1)]];
+        c.fillStyle = IS.settings.contrast ? '#000' : '#efe6cf'; c.fillRect(160, 32, 146, 134);
+        UI.wrap(c, it.desc + (it.anchored ? '\n\n(Anchored: survives midnight.)' : ''), 140, 10).forEach((l, i) => UI.text(c, l, 164, Y + i * 10, ink, 10));
+      }
+    }
+  }
+  UI.NotebookScene = NotebookScene;
+
+  // =============== settings ===============
+  class SettingsScene {
+    constructor() { this.sel = 0; this.help = false; }
+    rows() {
+      const s = IS.settings, pct = (v) => Math.round(v * 100) + '%', onoff = (v) => (v ? 'On' : 'Off');
+      return [
+        { label: 'Master volume', right: pct(s.master), adj: (d) => { s.master = IS.clamp(Math.round((s.master + d * 0.1) * 10) / 10, 0, 1); } },
+        { label: 'Music', right: pct(s.music), adj: (d) => { s.music = IS.clamp(Math.round((s.music + d * 0.1) * 10) / 10, 0, 1); } },
+        { label: 'Sound effects', right: pct(s.sfx), adj: (d) => { s.sfx = IS.clamp(Math.round((s.sfx + d * 0.1) * 10) / 10, 0, 1); } },
+        { label: 'Text speed', right: ['Slow', 'Normal', 'Fast', 'Instant'][s.textSpeed], adj: (d) => { s.textSpeed = (s.textSpeed + d + 4) % 4; } },
+        { label: 'Clock speed', right: s.flow === 2 ? 'Relaxed' : 'Normal', adj: () => { s.flow = s.flow === 2 ? 1 : 2; } },
+        { label: 'Screen shake', right: onoff(s.shake), adj: () => { s.shake = !s.shake; } },
+        { label: 'Glitch & flash effects', right: ['Off', 'Reduced', 'Full'][s.fx], adj: (d) => { s.fx = (s.fx + d + 3) % 3; } },
+        { label: 'CRT scanlines', right: onoff(s.crt), adj: () => { s.crt = !s.crt; } },
+        { label: 'Large text', right: onoff(s.big), adj: () => { s.big = !s.big; } },
+        { label: 'Plain (readable) font', right: onoff(s.plain), adj: () => { s.plain = !s.plain; } },
+        { label: 'High contrast', right: onoff(s.contrast), adj: () => { s.contrast = !s.contrast; } },
+        { label: 'Interaction sparkles', right: onoff(s.hints), adj: () => { s.hints = !s.hints; } },
+        { label: 'Touch controls', right: ['Auto', 'On', 'Off'][s.touch], adj: (d) => { s.touch = (s.touch + d + 3) % 3; IS.applyTouch(); } },
+        { label: 'View controls', right: '', act: () => { this.help = true; } }
+      ];
+    }
+    update() {
+      const In = I(), rows = this.rows();
+      if (this.help) { if (In.pressed.ok || In.back()) { this.help = false; IS.A.sfx('back'); } return; }
+      this.sel = UI.navList(this.sel, rows.length);
+      const r = rows[this.sel];
+      if (In.rep('left') && r.adj) { r.adj(-1); IS.G.saveSettings(); IS.A.sfx('select'); }
+      if ((In.rep('right') && r.adj) || (In.pressed.ok && r.adj)) { r.adj(1); IS.G.saveSettings(); IS.A.sfx('select'); }
+      if (In.pressed.ok && r.act) r.act();
+      if (In.back()) { IS.A.sfx('back'); IS.pop(); }
+    }
+    drawUI(c) {
+      const k = UI.col();
+      c.fillStyle = 'rgba(5,4,10,0.8)'; c.fillRect(0, 0, IS.W, IS.H);
+      UI.panel(c, 40, 8, 240, 164);
+      UI.text(c, 'SETTINGS', 52, 12, k.acc, 12);
+      UI.list(c, this.rows(), this.sel, 50, 28, 222, 10.2, { px: 10 });
+      if (this.help) {
+        UI.panel(c, 30, 30, 260, 120, { edge: k.acc });
+        const L = [['Move', 'Arrows / WASD · D-pad / stick'], ['Run', 'Shift · X / RT'], ['Talk / Inspect / OK', 'Z · Enter · Space · E · A'], ['Back', 'X · Backspace · B'],
+          ['Notebook', 'N · C · Tab · Y / Select'], ['Pause menu', 'Esc · P · Start'], ['Switch notebook tab', 'Left / Right']];
+        L.forEach((r, i) => { UI.text(c, r[0], 40, 38 + i * 14, k.acc, 10); UI.text(c, r[1], 280, 38 + i * 14, k.ink, 10, 'right'); });
+      }
+    }
+  }
+
+  // =============== save slots ===============
+  class SlotScene {
+    constructor(mode) { this.mode = mode; this.sel = 0; this.confirm = false; }
+    slots() { return this.mode === 'load' ? ['auto', 1, 2, 3] : [1, 2, 3]; }
+    update() {
+      const In = I(), sl = this.slots();
+      if (In.back()) { if (this.confirm) this.confirm = false; else IS.pop(); IS.A.sfx('back'); return; }
+      if (!this.confirm) this.sel = UI.navList(this.sel, sl.length);
+      if (In.pressed.ok) {
+        const s = sl[this.sel], d = IS.G.slot(s);
+        if (this.mode === 'save') {
+          if (d && !this.confirm) { this.confirm = true; IS.A.sfx('select'); return; }
+          IS.G.save(s); this.confirm = false; IS.pop();
+        } else {
+          if (!d) { IS.A.sfx('wrong'); return; }
+          IS.G.load(s); IS.A.sfx('confirm'); UI.startWorld();
+        }
+      }
+    }
+    drawUI(c) {
+      const k = UI.col();
+      c.fillStyle = 'rgba(5,4,10,0.85)'; c.fillRect(0, 0, IS.W, IS.H);
+      UI.panel(c, 30, 24, 260, 132);
+      UI.text(c, this.mode === 'save' ? 'SAVE GAME' : 'LOAD GAME', 42, 28, k.acc, 12);
+      this.slots().forEach((s, i) => {
+        const d = IS.G.slot(s), y = 46 + i * 26, on = i === this.sel;
+        if (on) { c.fillStyle = k.sel; c.fillRect(38, y - 2, 244, 24); }
+        UI.text(c, s === 'auto' ? 'Autosave' : 'Slot ' + s, 44, y, on ? k.acc : k.ink, 11);
+        if (d) {
+          UI.text(c, d.name + ' · Loop ' + d.loop + ' · Phase ' + d.phase, 276, y, k.ink, 10, 'right');
+          const r = IS.data.rooms[d.room];
+          UI.text(c, (r ? r.name : '') + ' · ' + IS.fmtTime(d.time) + ' · ' + new Date(d.savedAt || 0).toLocaleDateString(), 276, y + 10, k.dim, 9, 'right');
+        } else UI.text(c, 'Empty', 276, y, k.dim, 10, 'right');
+      });
+      if (this.confirm) UI.text(c, 'Overwrite this slot? OK to confirm, Back to cancel.', IS.W / 2, 144, k.red, 10, 'center');
+    }
+  }
+
+  // =============== extras ===============
+  class ExtrasScene {
+    constructor() { this.tab = 0; this.sel = 0; }
+    update() {
+      const In = I();
+      if (In.back()) { IS.A.sfx('back'); IS.pop(); return; }
+      if (In.rep('left') || In.rep('right')) { this.tab = (this.tab + 1) % 3; this.sel = 0; IS.A.sfx('select'); }
+      const n = this.tab === 0 ? IS.data.achievements.length : this.tab === 1 ? Object.keys(IS.data.endings).length : 0;
+      this.sel = UI.navList(this.sel, n);
+    }
+    drawUI(c) {
+      const k = UI.col();
+      c.fillStyle = 'rgba(5,4,10,0.9)'; c.fillRect(0, 0, IS.W, IS.H);
+      UI.panel(c, 16, 8, 288, 164);
+      ['Achievements', 'Endings', 'Credits'].forEach((t, i) => UI.text(c, t, 60 + i * 100, 12, i === this.tab ? k.acc : k.dim, 12, 'center'));
+      if (this.tab === 0) {
+        const A = IS.data.achievements;
+        const got = A.filter((a) => IS.meta.ach[a.id]).length;
+        UI.text(c, got + ' / ' + A.length + ' unlocked', 296, 28, k.dim, 9, 'right');
+        UI.list(c, A.map((a) => ({ label: IS.meta.ach[a.id] ? a.title : (a.secret ? '???' : a.title), disabled: !IS.meta.ach[a.id] })), this.sel, 26, 38, 130, 10.5, { max: 12 });
+        const a = A[this.sel];
+        UI.wrap(c, IS.meta.ach[a.id] || !a.secret ? a.desc : 'A secret. Keep looking.', 130, 10).forEach((l, i) => UI.text(c, l, 166, 40 + i * 10, k.ink, 10));
+        if (IS.meta.ach[a.id]) UI.text(c, '✓ Unlocked', 166, 150, k.acc, 10);
+      } else if (this.tab === 1) {
+        const ids = Object.keys(IS.data.endings);
+        UI.list(c, ids.map((id) => ({ label: IS.meta.endings[id] ? IS.data.endings[id].title : '???', disabled: !IS.meta.endings[id] })), this.sel, 26, 34, 130, 11);
+        const e = IS.data.endings[ids[this.sel]];
+        const txt = IS.meta.endings[ids[this.sel]] ? e.blurb : (e.future ? 'Arrives in a future chapter.' : (e.hint || 'Not found yet.'));
+        UI.wrap(c, txt, 130, 10).forEach((l, i) => UI.text(c, l, 166, 36 + i * 10, k.ink, 10));
+      } else {
+        const L = ['INFINITE SCHOOL', 'Chapter One: Homeroom', '', 'Created by Jaineil Rana', 'Story, code, pixels and music generated in code — no external assets.',
+          '', 'Built with plain JavaScript + Canvas + Web Audio.', 'Thank you for staying after class.'];
+        L.forEach((l, i) => UI.text(c, l, IS.W / 2, 36 + i * 13, i === 0 ? k.acc : k.ink, i === 0 ? 14 : 10, 'center'));
+      }
+    }
+  }
+
+  IS.UI = UI;
+})(window.IS);
+
+</script>
+<!-- content -->
+<script>/* data/world.js */
+// World rules & knowledge: clues, deductions, items, phases, clock, objectives.
+(function (D) {
+  D.phases = { 1: 'Normal School Life', 2: 'Strange Events', 3: 'Conspiracy', 4: 'Reality Collapse', 5: 'Final Truth' };
+  D.periods = [[0, 'Night'], [465, 'Homeroom'], [480, 'Morning Classes'], [720, 'Lunch'], [780, 'Afternoon Classes'], [900, 'After School'], [1080, 'Evening'], [1260, 'Night']];
+  D.bells = [[480, 'First bell'], [720, 'Lunch bell'], [780, 'Afternoon bell'], [900, 'Dismissal bell']];
+
+  // Rules evaluated every time a new loop begins
+  D.loopRules = [
+    { if: { loop: [3], phase: 2, not: 'theo_saved' }, do: { set: 'L.theo_missing' } }
+  ];
+
+  D.items = {
+    watch: { name: 'The Second Hand', desc: "Mr. Grey's pocketwatch. It keeps your time, not the school's. From the pause menu (Wait…) you can wind it to restart the day early.", anchored: true },
+    book: { name: 'The Patient Clock', desc: 'A library book. Chapter One is about a clock that refused to strike midnight. Due back today.' },
+    draft: { name: "Mira's Draft #213", desc: '"Good morning, Halloway. Today is our last day. Today is our last day. Today is—" It stops there.' }
+  };
+
+  const C = (cat, title, text) => ({ cat, title, text });
+  D.clues = {
+    c_repeat: C('anomaly', "Mira's Words", 'Mira woke you with the exact same words as yesterday. Same pause. Same joke about ghosts.'),
+    c_desk: C('anomaly', 'The Scratched Desk', "Back row of 2-B, the desk nobody uses. Carved deep: 'F.B. WAS HERE.' Below it, newer: 'F.B. IS STILL HERE.'"),
+    c_welcome: C('people', 'Welcome Back', "Mrs. Vell, the librarian, greeted you with 'Welcome back, dear. The same book as last time?' You have never been in the library."),
+    c_joke: C('anomaly', 'The Photocopier Joke', 'Coach Dunmore told you the same joke as yesterday, word for word. He swears he made it up this morning.'),
+    c_drawing: C('places', "June's Door", 'June Sato keeps drawing a grey door with a brass plate that reads 2-F. She sees it whenever she closes her eyes.'),
+    c_gap: C('places', 'The Missing Number', 'Second floor: 2-E, then a stretch of blank wall, then 2-G. The paint between them is a slightly newer shade of beige.'),
+    c_calendar: C('history', 'Final Assembly', "The principal's calendar: October 14 — FINAL ASSEMBLY. HALLOWAY ACADEMY CLOSES ITS DOORS. Penciled underneath: 'again.'"),
+    c_fog: C('anomaly', 'The Gate', 'Walk out the front gate and the fog walks you straight back to the front of the school.'),
+    c_bell: C('anomaly', 'Chalkboard Warning', "After school, on the 2-B chalkboard, in YOUR handwriting: 'DON'T TRUST THE BELL.' You don't remember writing it."),
+    c_grey: C('people', 'Mr. Grey Remembers', 'Mr. Grey has lived this Thursday since 1977. He remembers every loop. Until you, no one else did.'),
+    c_meeting: C('people', 'After-Hours Meeting', "Principal Hask and Ms. Marrow, after hours: 'The Bellwether holds.' They are worried about the student who remembers."),
+    c_theo_wall: C('history', "Theo's Theory Wall", "Theo's red-string wall: a 1977 fire drill where the head count came up one short. Officially, it never happened."),
+    c_theo_gone: C('people', 'Nobody Remembers Theo', 'Theo Vance is gone. His seat is empty, and nobody, not even Mira, remembers he ever existed.'),
+    c_tag: C('anomaly', 'Claimed by No One', "Theo's orange hoodie is in the Lost & Found box. The tag reads: 'CLAIMED BY: NO ONE.'"),
+    c_room2f: C('places', 'Room 2-F', "A classroom sealed since 1977. The board says 'FIRE DRILL — 2:15 PM. WAIT FOR HEAD COUNT.' The clock is stuck at 2:14."),
+    c_felix: C('people', 'Felix Bram', 'A see-through boy in a sweater vest, waiting in 2-F for a head count that never came. He thinks it is still 1977.'),
+    c_yearbook: C('history', 'The 1977 Yearbook', "Mr. Grey is on the faculty page with the same face at the same age. Felix Bram, voted 'Most Likely to Stay Forever.'"),
+    c_closures: C('history', 'Postponed', 'Closure notices from 1977, 1984, 1991, 2003, 2015... Each says the school closes tomorrow. Each is stamped POSTPONED.'),
+    c_minutes: C('history', 'Bellwether Minutes', 'Minutes of the Bellwether Society. Every page records the same meeting. Attendance grows by one name every decade.'),
+    c_founding: C('history', 'Built on the Stillwell', 'Halloway Academy, est. 1921, was built over the Stillwell spring. Locals said its water could keep a flower fresh for a year.'),
+    c_note_tv: C('anomaly', 'Note Under the Bleachers', "'IF YOU'RE READING THIS, IT'S STILL THURSDAY. —T.V.' Theo's initials, in faded ink that looks years old."),
+    c_speech: C('people', "Mira's Speech", 'Mira has written the Final Assembly speech 213 times. Every draft is dated today.'),
+    c_okon: C('people', "The Janitor's Key", 'Okon carries a heavy brass key tagged STILLWELL. He says the floors clean themselves every midnight.'),
+    c_pip: C('people', "Pip's Collar", "A cat collar in the Lost & Found: 'PIP. If found, call C. Marrow.' The cat in Ms. Marrow's photo died in 2015."),
+    c_sample: C('anomaly', 'Sample #4,117', 'A beaker in the chem lab: STILLWELL SAMPLE #4,117. The water stays perfectly flat even when you tap the glass.'),
+    c_blueprint: C('places', 'The Erased Wing', 'Old blueprints. An east wing is drawn, erased and drawn again, over and over until the paper is nearly transparent.'),
+    c_hask: C('people', "The Principal Doesn't Blink", 'Principal Hask has not blinked once. Or breathed, as far as you can tell.'),
+    c_ledger: C('anomaly', 'Things Kept', "A ledger under the school lists everything the Stillwell has kept. Your name is the newest entry, marked 'Pending.'")
+  };
+
+  D.deductions = [
+    { id: 'loop', title: 'The Day Repeats',
+      pairs: [['c_repeat', 'c_welcome'], ['c_joke', 'c_welcome'], ['c_repeat', 'c_joke'], ['c_bell', 'c_repeat'], ['c_bell', 'c_joke'], ['c_bell', 'c_welcome'], ['c_fog', 'c_repeat'], ['c_fog', 'c_joke'], ['c_fog', 'c_welcome']],
+      text: 'Every midnight, Thursday starts over. Everyone forgets except you, and a few people who know more than they are saying.',
+      do: { phase: 2 } },
+    { id: '2f', title: 'There Was a Room 2-F',
+      pairs: [['c_drawing', 'c_gap'], ['c_desk', 'c_gap'], ['c_blueprint', 'c_gap']],
+      text: 'Someone painted over a classroom between 2-E and 2-G. June has been drawing its door from memory. The wall should be easier to see through now.',
+      do: { shake: 1.2, sfx: 'glitch', toast: 'Something shifted on the second floor.' } },
+    { id: 'felix', title: 'F.B. Is Still Here',
+      pairs: [['c_desk', 'c_felix'], ['c_theo_wall', 'c_felix'], ['c_yearbook', 'c_felix']],
+      text: 'Felix Bram is the student missing from the 1977 head count. He never left the building. The building never let him go.',
+      do: { bond: { felix: 1 } } },
+    { id: 'forgotten', title: 'The Forgotten Are Kept',
+      pairs: [['c_theo_gone', 'c_tag'], ['c_tag', 'c_felix'], ['c_theo_gone', 'c_note_tv']],
+      text: "When the school takes someone, it doesn't erase them. It files them away like a lost glove. Reach into the Lost & Found.",
+      do: { toast: 'The Lost & Found box hums faintly.' } },
+    { id: 'bellwether', title: 'The Bellwether Society',
+      pairs: [['c_meeting', 'c_grey'], ['c_minutes', 'c_meeting'], ['c_minutes', 'c_grey'], ['c_sample', 'c_meeting']],
+      text: 'A secret society of teachers keeps the loop running on purpose. To them, an endless Thursday is a mercy.',
+      do: { ach: 'bellwether' } },
+    { id: 'closing', title: 'The School Refuses to Close',
+      pairs: [['c_calendar', 'c_yearbook'], ['c_calendar', 'c_closures'], ['c_closures', 'c_founding'], ['c_yearbook', 'c_founding']],
+      text: 'Halloway was supposed to close in 1977. It has postponed its last day ever since, and the Stillwell spring beneath it is doing the postponing.',
+      do: { phase: 3 } }
+  ];
+
+  // The notebook shows the first objective whose condition passes
+  D.objectives = [
+    { if: { flag: 'ch1_done' }, text: 'Chapter One is complete. Keep looping to find every clue, secret, achievement and ending. Chapter Two opens the east wing.' },
+    { if: { phase: 3, not: 'open_basement' }, text: 'The school is refusing to close, and something under it is responsible. The janitor, Okon, has a key nobody else has. Find him.' },
+    { if: { phase: 3 }, text: "Okon unlocked the way down. The stairs are in the janitor's closet on the first floor." },
+    { if: { flag: 'L.theo_missing', not: 'd.forgotten' }, text: 'Theo is gone and nobody remembers him. Where do things end up when nobody claims them?' },
+    { if: { flag: ['L.theo_missing', 'd.forgotten'] }, text: 'Reach into the Lost & Found box in the lobby. Bring Theo back.' },
+    { if: { phase: 2, not: 'grey_confided' }, text: 'The day repeats. Someone at Halloway must remember too. Who would know the most about the past? Try the history classroom, 2-G.' },
+    { if: { phase: 2, not: 'd.2f' }, text: 'The second-floor rooms skip a number. Look at the wall between 2-E and 2-G, and ask June what she keeps drawing.' },
+    { if: { flag: 'd.2f', noclue: 'c_felix' }, text: 'Room 2-F is open. Go inside.' },
+    { if: { phase: 2, noclue: 'c_yearbook' }, text: 'The library holds more history than it shows. Ask Mrs. Vell about it, then look for what is hidden behind the shelves.' },
+    { if: { phase: 2 }, text: 'Connect what the calendar says about tomorrow with what the archive says about the past.' },
+    { if: { clues: 3 }, text: 'Open the Notebook (N), go to the Board, and connect two clues that feel related. Deductions unlock new places and people.' },
+    { if: {}, text: 'Something is off about today. Explore Halloway, talk to everyone, and inspect anything that sparkles. Clues go in your Notebook (N).' }
+  ];
+
+  // Library shelves: random lore, rotates every loop
+  D.books = [
+    ['"A History of Thursday." Every page is blank except the first: "It was a Thursday."'],
+    ['"Herons of the Northern Marsh." Someone has pressed a heron feather between pages 40 and 41. It is still soft.'],
+    ['"Springs, Wells & Folk Belief." A paragraph is underlined: "Water that will not move will not let anything else move either."'],
+    ['"The Patient Clock," a children\'s book. The clock refuses to strike midnight because it loves the day too much.', 'The last page has been torn out.'],
+    ['A yearbook from 2015. Every senior photo has the same background: the courtyard oak, the same cloud above it.'],
+    ['"Grief: A Field Guide." The checkout card has one name on it, over and over: C. Marrow.'],
+    ['"So You\'re Closing a School: A Practical Handbook." It has never been opened. The spine cracks loudly.'],
+    ['"Stars for Beginners." A pencil note in the margin: "Eclipse — Oct 14! Don\'t miss it. —F.B."'],
+    ['A cookbook. Recipe 12: "Mystery Meat (Traditional)." The instructions just say: "You know."'],
+    ['"Halloway Ghost Stories." Story 3: The Boy in 2-F. Story 4: The Janitor Who Hums the Bell. Story 5 is just your name.', 'You look again. It is not your name. It is a blank line.'],
+    ['A dictionary. The word "tomorrow" has been neatly cut out with a razor.'],
+    ['"Knots for Sailors." Someone practiced a knot on a bookmark ribbon. It has been tied and untied thousands of times.'],
+    ['"Local Architecture, 1920–1930." A photo of Halloway under construction. Workers stand around a perfectly round pool in the foundations.'],
+    ['A library record card for "The Patient Clock." Borrowed: Thursday. Returned: Thursday. Borrowed: Thursday. The column runs off the bottom of the card.'],
+    ['"How to Say Goodbye." It is shelved upside down, as if someone wanted to make it harder to read.'],
+    ['A poetry anthology, open to a page that has been read so often the words are smudged into grey.']
+  ];
+})(window.IS.data);
+
+</script>
+<script>/* data/rooms.js */
+// Rooms. Maps are ASCII; see docs/CONTENT_GUIDE.md for the tile legend.
+// exits: step on (x,y) to travel. obj: inspectable things (dialogue lists).
+// dyn: tiles that change when a condition becomes true.
+(function (D) {
+  const R = D.rooms;
+  const say = (...lines) => ({ lines });
+
+  R.c2b = {
+    name: 'Classroom 2-B', floor: '2F', theme: 'school', music: 'homeroom', duskMusic: 'twilight', spawn: [13, 8],
+    map: [
+      '##WW##KKKKKKK##WW###',
+      '#.......TT.........#',
+      '#..................#',
+      '#..D.D.D.D.D.D.....#',
+      '#..C.C.C.C.C.C.....#',
+      '#..D.D.D.D.D.D.....#',
+      '#..C.C.C.C.C.C.....#',
+      '#..D.D.D.D.D.D.....#',
+      '#..C.C.C.C.C.C...P.#',
+      '#..................#',
+      '########dd##########'
+    ],
+    exits: [{ x: 8, y: 10, to: 'hall2f', tx: 10, ty: 2, dir: 0 }, { x: 9, y: 10, to: 'hall2f', tx: 10, ty: 2, dir: 0 }],
+    obj: [
+      { x: 6, y: 0, w: 7, d: [
+        { id: 'board_bell', hint: true, if: { loop: [2], time: [900, 1440] }, lines: ['Chalk, in handwriting you know better than anyone\'s.', 'Yours.', '"DON\'T TRUST THE BELL."', 'You have no memory of writing it. The chalk dust is still fresh.'], do: { clue: 'c_bell', glitch: 0.5 } },
+        { id: 'board_day', lines: ['"THURSDAY, OCT. 13 — LAST FULL DAY! Final Assembly tomorrow, 9 AM. Bring tissues. —Mira"', 'Someone has drawn a small frowning clock next to it.'] }
+      ] },
+      { x: 3, y: 7, d: [{ id: 'desk_fb', hint: true, lines: ['The desk at the back that nobody sits at.', 'Carved deep into the wood: "F.B. WAS HERE."', 'Under it, newer, sharper: "F.B. IS STILL HERE."'], do: { clue: 'c_desk' } }] },
+      { x: 13, y: 7, d: [{ id: 'mydesk', lines: ['Your desk. There is a perfect circle of dried drool on it.', 'You have apparently slept here a lot.'] }] },
+      { x: 8, y: 1, w: 2, d: [say('The teacher\'s desk. A seating chart: twenty-two names. One square is empty, outlined in pencil so many times the paper is shiny.')] },
+      { x: 17, y: 8, d: [say('A potted fern. It has not grown a single leaf since you started here.', 'Neither has anything else.')] },
+      { x: 2, y: 0, w: 2, d: [say('Outside, the same cloud is drifting past the same tree.')] },
+      { x: 15, y: 0, w: 2, d: [say('From the window you can see the front gate. The street beyond it is lost in fog.')] }
+    ]
+  };
+
+  R.hall2f = {
+    name: 'Second Floor Hall', floor: '2F', theme: 'school', music: 'hall', duskMusic: 'twilight', spawn: [10, 2],
+    map: [
+      '####d#####d#####d#####E#####d###',
+      '#LLL.LLLLL.LLLLL.LLLLL.LLLLL.LL#',
+      '#.............................S#',
+      '#.............................S#',
+      '#.........................P...S#',
+      '#L.LLLLLLLLLLLLLLLLL.LLLLLLLLLL#',
+      '##d#################d###########'
+    ],
+    dyn: [{ x: 22, y: 0, t: 'd', if: { flag: 'd.2f' } }],
+    exits: [
+      { x: 4, y: 0, if: { flag: 'never' }, lock: ['Room 2-A. Locked.', 'A sign: "FIELD TRIP — BACK THURSDAY."'] },
+      { x: 10, y: 0, to: 'c2b', tx: 8, ty: 9, dir: 1 },
+      { x: 16, y: 0, to: 'art', tx: 9, ty: 9, dir: 1 },
+      { x: 22, y: 0, to: 'c2f', tx: 8, ty: 9, dir: 1, if: { flag: 'd.2f' } },
+      { x: 28, y: 0, to: 'history', tx: 9, ty: 9, dir: 1 },
+      { x: 2, y: 6, to: 'rooftop', tx: 9, ty: 1, dir: 0 },
+      { x: 20, y: 6, to: 'av', tx: 2, ty: 1, dir: 0 },
+      { x: 30, y: 2, to: 'hall1f', tx: 29, ty: 3, dir: 2 }, { x: 30, y: 3, to: 'hall1f', tx: 29, ty: 3, dir: 2 }, { x: 30, y: 4, to: 'hall1f', tx: 29, ty: 3, dir: 2 }
+    ],
+    obj: [
+      { x: 22, y: 0, d: [
+        { id: 'gap2f', hint: true, if: { not: 'd.2f' }, lines: ['Room 2-E. Then a stretch of blank wall. Then Room 2-G.', 'The paint here is a slightly newer shade of beige.', 'If you press your ear to it, you can hear a clock ticking.'], do: { clue: 'c_gap' } },
+        { if: { not: 'd.2f' }, lines: ['Blank wall between 2-E and 2-G. Ticking.'] }
+      ] },
+      { x: 3, y: 1, d: [say('Your locker. Combination: the one you have known all year. Inside, a gym shirt and a note that says "remember."', 'You do not remember leaving it.')] },
+      { x: 26, y: 4, d: [say('A tall plant. Someone has hung a hall pass on it like a Christmas ornament.')] },
+      { x: 20, y: 5, d: [say('A door marked A/V. Somebody has taped a sign to it: "TRUTH CLOSET. KNOCK FIRST. THE TRUTH IS SHY."')] },
+      { x: 2, y: 5, d: [say('A door with a hand-painted sign: ROOF — NO STUDENTS. Under it, smaller: "(but the view is nice)."')] }
+    ]
+  };
+
+  R.art = {
+    name: 'Art Room 2-E', floor: '2F', theme: 'school', music: 'homeroom', duskMusic: 'twilight', spawn: [9, 9],
+    map: [
+      '##WWW##KKK###WWW####',
+      '#=====.........BBB.#',
+      '#..................#',
+      '#..o...o...o...o...#',
+      '#..................#',
+      '#..o...o...o...o...#',
+      '#..................#',
+      '#.....TTTT.........#',
+      '#.....C..C.......P.#',
+      '#..................#',
+      '#########dd#########'
+    ],
+    exits: [{ x: 9, y: 10, to: 'hall2f', tx: 16, ty: 2, dir: 0 }, { x: 10, y: 10, to: 'hall2f', tx: 16, ty: 2, dir: 0 }],
+    obj: [
+      { x: 7, y: 3, d: 'june_easel' },
+      { x: 3, y: 3, d: [{ id: 'art_clocks', hint: true, lines: ['A still life of a classroom wall full of clocks.', 'Every single clock in the painting reads 11:59.'] }] },
+      { x: 11, y: 5, d: [{ id: 'art_wing', hint: true, lines: ['A painting of Halloway from above, like a bird would see it.', 'There is an extra wing on the east side, painted in flat grey, as if the artist was not allowed to look at it directly.'] }] },
+      { x: 15, y: 3, d: [say('A self-portrait. The face has been painted over so many times it has become a smooth beige oval.')] },
+      { x: 3, y: 5, d: [say('A watercolor of a heron standing in still water. The water is the only part painted with real care.')] },
+      { x: 1, y: 1, w: 5, d: [say('Paint tubes. Every single one is squeezed exactly halfway.')] },
+      { x: 15, y: 1, w: 3, d: [say('Shelves of drying clay. A row of identical clay cups, each signed "June."', 'There are hundreds.')] }
+    ]
+  };
+
+  R.c2f = {
+    name: 'Room 2-F', floor: '2F', theme: 'anomaly', music: 'anomaly', keepMusic: true, glitch: 0.12, secret: true, spawn: [8, 9],
+    map: [
+      '##WW##KKKKKKK##WW###',
+      '#.......TT.........#',
+      '#~.......~.........#',
+      '#..D.D.D.D.D.D.....#',
+      '#..C.C.C.C.C.C..~..#',
+      '#..D.D.D.D.D.D.....#',
+      '#..C.C.C.C.C.C.....#',
+      '#..D.D.D.D.D.D...x.#',
+      '#..C.C.C.C.C.C.....#',
+      '#.......~..........#',
+      '########dd##########'
+    ],
+    enter: [{ scene: 'enter2f', onceEver: true }],
+    npcs: [{ id: 'felix', x: 13, y: 4, dir: 1 }],
+    exits: [{ x: 8, y: 10, to: 'hall2f', tx: 22, ty: 2, dir: 0 }, { x: 9, y: 10, to: 'hall2f', tx: 22, ty: 2, dir: 0 }],
+    obj: [
+      { x: 6, y: 0, w: 7, d: [{ id: 'board2f', hint: true, lines: ['Chalk, perfectly preserved, as if it was written a minute ago:', '"FIRE DRILL — 2:15 PM. WAIT FOR HEAD COUNT."', 'In the corner: "Thursday, October 13th, 1977."'], do: { clue: 'c_room2f' } }] },
+      { x: 4, y: 0, d: [say('A wall clock. 2:14 PM. The second hand trembles against the 12 and never gets past it.')] },
+      { x: 17, y: 7, d: [
+        { if: { flag: 'felix_message' }, lines: ['The supply closet. Inside the door frame, a tiny star is carved, and the initials F.B.', 'Small enough to hide in. Small enough to be missed in a head count.'] },
+        { lines: ['A supply closet. Small enough to hide in. Someone carved a tiny star inside the door frame.'] }
+      ] },
+      { x: 3, y: 7, d: [say('A desk. Inside: a 1977 bus pass, a pencil sharpened down to a stub, and a note: "Meet at the oak after the drill!"')] },
+      { x: 2, y: 0, w: 2, d: [say('Through the window: the same courtyard, but the oak is a sapling and the cars are boxy and brown.')] }
+    ]
+  };
+
+  R.history = {
+    name: 'History Room 2-G', floor: '2F', theme: 'school', music: 'homeroom', duskMusic: 'twilight', spawn: [9, 9],
+    map: [
+      '##WW##KKKKKKK##BB###',
+      '#.......TT.......B.#',
+      '#..................#',
+      '#..D.D.D.D.D.D.....#',
+      '#..C.C.C.C.C.C.....#',
+      '#..D.D.D.D.D.D.....#',
+      '#..C.C.C.C.C.C.....#',
+      '#..................#',
+      '#P......x.x.....P..#',
+      '#..................#',
+      '########dd##########'
+    ],
+    exits: [{ x: 8, y: 10, to: 'hall2f', tx: 28, ty: 2, dir: 0 }, { x: 9, y: 10, to: 'hall2f', tx: 28, ty: 2, dir: 0 }],
+    obj: [
+      { x: 8, y: 8, d: [{ id: 'display_found', hint: true, lines: ['A display case: "HALLOWAY ACADEMY, EST. 1921. Built upon the Stillwell Spring."', 'Inside lies a dried yellow flower. It is still bright. It has been in there since 1921.'], do: { clue: 'c_founding' } }] },
+      { x: 10, y: 8, d: [say('Trophies: "Regional History Bowl Champions — 1975, 1976, 1977."', 'Then nothing. For almost fifty years.')] },
+      { x: 6, y: 0, w: 7, d: [say('Today\'s lesson, underlined three times: "WHY DO EMPIRES REFUSE TO END?"')] },
+      { x: 15, y: 0, w: 3, d: [say('History books. One spine reads "A History of Thursday." You decide not to open it.')] },
+      { x: 17, y: 1, d: [say('A framed map of the town, 1977. The school is drawn with an east wing. The modern map beside it has none.')] }
+    ]
+  };
+
+  R.rooftop = {
+    name: 'Rooftop', floor: '2F', theme: 'roof', music: 'twilight', outdoor: true, spawn: [9, 1],
+    map: [
+      'rrrrrrrrrdrrrrrrrrrr',
+      'r..................r',
+      'r..b.......b.......r',
+      'r..................r',
+      'r.....xx...........r',
+      'r..................r',
+      'r.............P....r',
+      'r..b...............r',
+      'r..................r',
+      'r..................r',
+      'rrrrrrrrrrrrrrrrrrrr'
+    ],
+    exits: [{ x: 9, y: 0, to: 'hall2f', tx: 2, ty: 4, dir: 1 }],
+    obj: [
+      { x: 3, y: 2, d: 'sit_bench' }, { x: 11, y: 2, d: 'sit_bench' }, { x: 3, y: 7, d: 'sit_bench' },
+      { x: 0, y: 1, h: 9, d: [
+        { if: { phase: 2, time: [1320, 1440] }, lines: ['The sky has seams. Thin pale lines, like stitches pulled too tight.', 'Something on the other side is pulling.'], do: { glitch: 0.6 } },
+        { lines: ['Past the railing, the town. Every window is lit exactly the way it was lit last night.'] }
+      ] },
+      { x: 19, y: 1, h: 9, d: [say('The east side of the roof. Below, where a wing of the building should connect, there is just a smooth wall and a lot of fog.')] },
+      { x: 6, y: 4, w: 2, d: [say('An air-conditioning unit. Taped to it: a perfect paper heron, folded from a page of the school handbook.')] }
+    ]
+  };
+
+  R.av = {
+    name: 'A/V Closet', floor: '2F', theme: 'school', music: 'hall', spawn: [2, 1],
+    map: [
+      '##d#########',
+      '#..==xx==BB#',
+      '#..........#',
+      '#..........#',
+      '#x........x#',
+      '#..........#',
+      '#..........#',
+      '############'
+    ],
+    exits: [{ x: 2, y: 0, to: 'hall2f', tx: 20, ty: 4, dir: 1 }],
+    obj: [
+      { x: 5, y: 1, w: 2, d: [
+        { if: { flag: 'L.theo_missing' }, lines: ['A corkboard. The pins are still there. The red string is still there.', 'But every photo, every clipping, every note is blank. As if the wall forgot what it was about.'] },
+        { id: 'theo_wall_obj', hint: true, lines: ['A corkboard webbed with red string. Clippings, maps, a blurry photo of the gym.', 'In the center, in marker: "1977 — WHO WAS MISSING?"'] }
+      ] },
+      { x: 1, y: 4, d: [say('A box of VHS tapes, all labelled "Final Assembly — Rehearsal." There are dozens. All dated today.')] },
+      { x: 10, y: 4, d: [say('A projector, still warm. It is projecting a single frame on the wall: an empty hallway that slowly gets longer if you stare.')] },
+      { x: 3, y: 1, w: 1, d: [say('Cables. So many cables. Theo has labelled each one with its emotional state. This one is "anxious."')] }
+    ]
+  };
+
+  R.hall1f = {
+    name: 'First Floor Hall', floor: '1F', theme: 'school', music: 'hall', duskMusic: 'twilight', spawn: [16, 2],
+    map: [
+      '####d#####d#####d#####d#####d###',
+      '#LLL.LLLLL.LLLLL.LLLLL.LLLLL.LL#',
+      '#.............................S#',
+      '#.............................S#',
+      '#...v.....................P...S#',
+      '#L.LLLLLLLLLLLLL.LLLLLLLLLLLLLL#',
+      '##d#############d###############'
+    ],
+    exits: [
+      { x: 4, y: 0, to: 'library', tx: 11, ty: 11, dir: 1 },
+      { x: 10, y: 0, to: 'chem', tx: 8, ty: 9, dir: 1 },
+      { x: 16, y: 0, to: 'office', tx: 7, ty: 8, dir: 1 },
+      { x: 22, y: 0, to: 'cafe', tx: 11, ty: 11, dir: 1 },
+      { x: 28, y: 0, to: 'janitor', tx: 5, ty: 6, dir: 1, if: { flag: 'open_basement' }, lock: ['Janitor\'s closet. Locked.', 'A note: "NO STUDENTS. NO EXCEPTIONS. NO, NOT EVEN YOU. —O."'] },
+      { x: 2, y: 6, to: 'gym', tx: 11, ty: 1, dir: 0 },
+      { x: 16, y: 6, to: 'lobby', tx: 9, ty: 1, dir: 0 },
+      { x: 30, y: 2, to: 'hall2f', tx: 29, ty: 3, dir: 2 }, { x: 30, y: 3, to: 'hall2f', tx: 29, ty: 3, dir: 2 }, { x: 30, y: 4, to: 'hall2f', tx: 29, ty: 3, dir: 2 }
+    ],
+    obj: [
+      { x: 4, y: 4, d: [
+        { id: 'vend', lines: ['A vending machine with exactly three bags of chips: Salt, Vinegar, and Salt & Vinegar.', 'They have been in the same slots since September.'], choices: [
+          { t: 'Buy Salt & Vinegar', lines: ['Clunk. You eat them. They taste like September.'], do: { inc: 'chips' } },
+          { t: 'Leave it', lines: [] }] }
+      ] },
+      { x: 26, y: 4, d: [say('A plant with a sticky note: "Please water me. —The Plant." The handwriting is Theo\'s.')] }
+    ]
+  };
+
+  R.library = {
+    name: 'Library', floor: '1F', theme: 'library', music: 'library', keepMusic: true, books: true, spawn: [11, 11],
+    map: [
+      '##BBBBBB##WWWW##BBBBBB##',
+      '#......................#',
+      '#.BBBB..BBBB..BBBB..BB.#',
+      '#......................#',
+      '#.BBBB..BBBB..BBBB..BB.#',
+      '#......................#',
+      '#..TTT....TTT....TTT...#',
+      '#..C.C....C.C....C.C...#',
+      '#......................#',
+      '#.......====...........#',
+      '#......................#',
+      '#...........P..........#',
+      '###########dd###########'
+    ],
+    exits: [{ x: 11, y: 12, to: 'hall1f', tx: 4, ty: 2, dir: 0 }, { x: 12, y: 12, to: 'hall1f', tx: 4, ty: 2, dir: 0 }],
+    obj: [
+      { x: 14, y: 4, w: 4, d: [
+        { if: { flag: 'archive_hint' }, lines: ['The third shelf of Local History.', 'You push gently. The shelf sighs, like something shy, and swings inward.'], do: { warp: ['archive', 6, 7, 1], sfx: 'door' } },
+        { lines: ['Local History. Three shelves of it. The third shelf is suspiciously dust-free.'] }
+      ] },
+      { x: 10, y: 0, w: 4, d: [say('Outside, the courtyard oak. A leaf has been falling from it since this morning. It still has not landed.')] }
+    ]
+  };
+
+  R.archive = {
+    name: 'The Archive', floor: 'Hidden', theme: 'library', music: 'anomaly', keepMusic: true, glitch: 0.05, secret: true, spawn: [6, 7],
+    map: [
+      '##############',
+      '#BBBB....BBBB#',
+      '#............#',
+      '#.x..TT...x..#',
+      '#....CC......#',
+      '#............#',
+      '#B..........B#',
+      '#............#',
+      '######dd######'
+    ],
+    exits: [{ x: 6, y: 8, to: 'library', tx: 15, ty: 5, dir: 0 }, { x: 7, y: 8, to: 'library', tx: 15, ty: 5, dir: 0 }],
+    obj: [
+      { x: 5, y: 3, w: 2, d: [{ id: 'yearbook', hint: true, lines: ['The 1977 Halloway Yearbook, lying open as if it has been waiting for you.',
+        'Page 41, Faculty: "Mr. Aldous Grey, History." The same face. The same tired eyes. The same tweed.',
+        'Page 88, Class 2-F: "Felix Bram. Most Likely to Stay Forever." His photo is blurred, as if he moved.',
+        'Page 112: "Next year, Halloway celebrates the Stillwell Centennial!"', 'Next year never came.'], do: { clue: 'c_yearbook' } }] },
+      { x: 2, y: 3, d: [{ id: 'closures', hint: true, lines: ['A filing cabinet. Folder: CLOSURE NOTICES.', 'There are dozens. 1977. 1984. 1991. 2003. 2015.', 'Every one announces that the school closes tomorrow. Every one is stamped in red: POSTPONED.'], do: { clue: 'c_closures' } }] },
+      { x: 10, y: 3, d: [{ id: 'minutes', hint: true, lines: ['A box marked BELLWETHER — MINUTES.', 'Every page records the same meeting, on the same Thursday.', '"Motion: that the day be kept. Carried." The list of attendees grows by one name every decade.'], do: { clue: 'c_minutes' } }] },
+      { x: 1, y: 1, w: 4, d: [{ id: 'blueprints', hint: true, lines: ['Blueprints of the school.', 'An east wing is drawn in pencil, erased, drawn again, erased again, until the paper is nearly see-through.'], do: { clue: 'c_blueprint' } }] },
+      { x: 9, y: 1, w: 4, d: [say('Old attendance books. Every page, every year: "Thursday."')] }
+    ]
+  };
+
+  R.chem = {
+    name: 'Chemistry Lab', floor: '1F', theme: 'school', music: 'homeroom', duskMusic: 'twilight', spawn: [8, 9],
+    map: [
+      '##WW##KKKKKKK##WW###',
+      '#qq.....TT.......q.#',
+      '#..................#',
+      '#..hhh..hhh..hhh...#',
+      '#..................#',
+      '#..hhh..hhh..hhh...#',
+      '#..................#',
+      '#..hhh..hhh..hhh...#',
+      '#................B.#',
+      '#..................#',
+      '########dd##########'
+    ],
+    exits: [{ x: 8, y: 10, to: 'hall1f', tx: 10, ty: 2, dir: 0 }, { x: 9, y: 10, to: 'hall1f', tx: 10, ty: 2, dir: 0 }],
+    obj: [
+      { x: 6, y: 0, w: 7, d: [say('A periodic table. Someone has penciled in an extra element at the bottom:', '"Hw — Hallowium. Half-life: exactly one day."')] },
+      { x: 3, y: 3, w: 3, d: [{ id: 'sample', hint: true, lines: ['A beaker labelled "DO NOT DRINK — STILLWELL SAMPLE #4,117."', 'You tap the glass. The water does not ripple. Not even a little.'], do: { clue: 'c_sample' } }] },
+      { x: 17, y: 8, d: [say('Ms. Marrow\'s shelf. A framed photo of a very large orange cat wearing a tiny lab coat.', 'The plaque: "Pip, Lab Assistant, 2009–2015."')] },
+      { x: 1, y: 1, w: 2, d: [say('An eyewash station. A sign: "IF YOU CAN READ THIS, YOU ARE NOT WEARING GOGGLES."')] }
+    ]
+  };
+
+  R.office = {
+    name: "Principal's Office", floor: '1F', theme: 'office', music: 'hall', spawn: [7, 8],
+    map: [
+      '####WWWW########',
+      '#BB,,,,,,,,,,BB#',
+      '#,,,,,,,,,,,,,,#',
+      '#,,,,TTTT,,,,,x#',
+      '#,,,,,,C,,,,,,,#',
+      '#,,,,,,,,,,,,,,#',
+      '#,,P,,,,,,,,,,x#',
+      '#,,,,,,,,,,,,,,#',
+      '#,,,,,,,,,,,,,,#',
+      '#######dd#######'
+    ],
+    enter: [{ scene: 'meeting', if: { phase: 2, time: [1200, 1320], noclue: 'c_meeting' } }],
+    exits: [{ x: 7, y: 9, to: 'hall1f', tx: 16, ty: 2, dir: 0 }, { x: 8, y: 9, to: 'hall1f', tx: 16, ty: 2, dir: 0 }],
+    obj: [
+      { x: 9, y: 0, w: 3, d: [{ id: 'calendar', hint: true, lines: ['A wall calendar. Every day of October is crossed out except today.', 'Tomorrow is circled in red: "FINAL ASSEMBLY — HALLOWAY ACADEMY CLOSES ITS DOORS."', 'Underneath, in pencil, very small: "again."'], do: { clue: 'c_calendar' } }] },
+      { x: 14, y: 3, d: 'bell_panel' },
+      { x: 14, y: 6, d: [
+        { if: { loop: [5] }, lines: ['Student files. Yours is thicker than it should be.', 'Every page is the same attendance record: "Thursday — PRESENT."', 'You count the pages. There are exactly {loop}.'] },
+        { lines: ['Student files. Yours is here. Every page is the same attendance record: "Thursday — PRESENT."'] }
+      ] },
+      { x: 1, y: 1, w: 2, d: [say('Binders labelled "Contingency Plans." Plan A: Close the school. Plan B: Do not.', 'There are no other plans.')] },
+      { x: 13, y: 1, w: 2, d: [say('A shelf of identical trophies: "Halloway Academy — Perfect Attendance." One for every year since 1977.')] }
+    ]
+  };
+
+  R.cafe = {
+    name: 'Cafeteria', floor: '1F', theme: 'cafe', music: 'homeroom', duskMusic: 'twilight', spawn: [11, 11],
+    map: [
+      '####WWWW########WWWW####',
+      '#======::::::::::::::vv#',
+      '#::::::::::::::::::::::#',
+      '#::TTTT::::TTTT::::TTT:#',
+      '#::C:C::::::C:C::::C:C:#',
+      '#::::::::::::::::::::::#',
+      '#::TTTT::::TTTT::::TTT:#',
+      '#::C:C::::::C:C::::C:C:#',
+      '#::::::::::::::::::::::#',
+      '#P::::::::::::::::::::P#',
+      '#::::::::::::::::::::::#',
+      '#::::::::::::::::::::::#',
+      '###########dd###########'
+    ],
+    exits: [{ x: 11, y: 12, to: 'hall1f', tx: 22, ty: 2, dir: 0 }, { x: 12, y: 12, to: 'hall1f', tx: 22, ty: 2, dir: 0 }],
+    obj: [
+      { x: 1, y: 1, w: 6, d: [
+        { if: { flag: 'L.ate' }, lines: ['The lunch line. You have already had the Mystery Meat today. Your body would like a word.'] },
+        { if: { time: [700, 840] }, lines: ['Today\'s special: MYSTERY MEAT THURSDAY.', 'The menu board has been chalked so many times the letters are carved into it.'], choices: [
+          { t: 'Eat the Mystery Meat', lines: ['It is warm. It is brown. It tastes faintly of déjà vu.'], do: { set: 'L.ate', inc: 'meat' } },
+          { t: 'Not today', lines: ['The lunch lady nods slowly, like she has seen you decline before.'] }] },
+        { lines: ['The serving counter is closed. A sign: "MYSTERY MEAT: SERVED AT LUNCH. ALWAYS. FOREVER."'] }
+      ] },
+      { x: 21, y: 1, w: 2, d: [say('A vending machine. It only sells one drink: "Thursday Punch." It is the color of a bruise.')] },
+      { x: 4, y: 0, w: 4, d: [say('Through the window you can see the courtyard. A bird lands on the oak, takes off, lands again. The same bird. The same branch.')] }
+    ]
+  };
+
+  R.janitor = {
+    name: "Janitor's Closet", floor: '1F', theme: 'school', music: 'anomaly', secret: true, spawn: [5, 6],
+    map: [
+      '############',
+      '#xx..==..qq#',
+      '#..........#',
+      '#..........#',
+      '#x.......x.#',
+      '#..........#',
+      '#..........#',
+      '#####d######'
+    ],
+    dyn: [{ x: 9, y: 4, t: 'S', if: { flag: 'open_basement' } }],
+    exits: [{ x: 5, y: 7, to: 'hall1f', tx: 28, ty: 2, dir: 0 }, { x: 9, y: 4, to: 'sublevel', tx: 9, ty: 10, dir: 1, if: { flag: 'open_basement' } }],
+    obj: [
+      { x: 1, y: 1, w: 2, d: [say('Mops. Bone dry. They have never been used.')] },
+      { x: 9, y: 1, w: 2, d: [say('A sink. The faucet drips. Each drop hangs for a full second before it falls, as if deciding.')] },
+      { x: 5, y: 1, w: 2, d: [say('A radio, playing static. Under the static, very faintly, a school bell, slowed down until it sounds like a heartbeat.')] }
+    ]
+  };
+
+  R.lobby = {
+    name: 'Front Lobby', floor: '1F', theme: 'lobby', music: 'hall', duskMusic: 'twilight', spawn: [9, 1],
+    map: [
+      '####WW###dd###WW####',
+      '#P................P#',
+      '#..................#',
+      '#..x...........x...#',
+      '#..................#',
+      '#.......bbbb.......#',
+      '#..................#',
+      '#..................#',
+      '#P......====.....P.#',
+      '#..................#',
+      '########dddd########'
+    ],
+    exits: [
+      { x: 9, y: 0, to: 'hall1f', tx: 16, ty: 4, dir: 1 }, { x: 10, y: 0, to: 'hall1f', tx: 16, ty: 4, dir: 1 },
+      { x: 8, y: 10, to: 'courtyard', tx: 11, ty: 1, dir: 0 }, { x: 9, y: 10, to: 'courtyard', tx: 11, ty: 1, dir: 0 },
+      { x: 10, y: 10, to: 'courtyard', tx: 12, ty: 1, dir: 0 }, { x: 11, y: 10, to: 'courtyard', tx: 12, ty: 1, dir: 0 }
+    ],
+    obj: [
+      { x: 3, y: 3, d: 'lost_found_box' },
+      { x: 15, y: 3, d: [say('A trophy: "HALLOWAY HERONS — STATE CHAMPIONS 1976."', 'In 1977 the heron mascot was replaced with a clock. Nobody remembers voting on it.')] },
+      { x: 8, y: 8, w: 4, d: [say('The visitor log. Every line says "Thursday." The last outside visitor signed in during 1977.')] },
+      { x: 19, y: 2, h: 7, d: [
+        { if: { phase: 3 }, lines: ['The east wall. It is warm, like a forehead with a fever.', 'Through it, faintly, you hear a whole hallway\'s worth of footsteps. Walking. Walking. Never arriving.'] },
+        { lines: ['The east wall. The paint is warm to the touch.'] }
+      ] },
+      { x: 8, y: 5, w: 4, d: 'sit_bench' }
+    ]
+  };
+
+  R.courtyard = {
+    name: 'Courtyard', floor: 'Grounds', theme: 'outdoor', music: 'courtyard', duskMusic: 'twilight', outdoor: true, spawn: [11, 1],
+    map: [
+      '##########dddd##########',
+      'Y......................Y',
+      'Y..pppppppppppppppppp..Y',
+      'Y..p....gggggggg....p..Y',
+      'Y..p..b.gg....gg.b..p..Y',
+      'Y..p....gg.YY.gg....p..Y',
+      'Y..p....gg....gg....p..Y',
+      'Y..p....gggggggg....p..Y',
+      'Y..pppppppppppppppppp..Y',
+      'Y...........p..........Y',
+      'Y.P.........p.......P..Y',
+      'Y...........p..........Y',
+      'FFFFFFFFFFFFGFFFFFFFFFFF'
+    ],
+    exits: [
+      { x: 10, y: 0, to: 'lobby', tx: 9, ty: 9, dir: 1 }, { x: 11, y: 0, to: 'lobby', tx: 9, ty: 9, dir: 1 },
+      { x: 12, y: 0, to: 'lobby', tx: 10, ty: 9, dir: 1 }, { x: 13, y: 0, to: 'lobby', tx: 10, ty: 9, dir: 1 },
+      { x: 12, y: 12, scene: 'gate' }
+    ],
+    obj: [
+      { x: 11, y: 5, w: 2, d: [{ id: 'oak', hint: true, lines: ['The old oak. Carved into the bark, at about the height of a fourteen-year-old:', '"F.B. — I\'ll be back for the eclipse."'] }] },
+      { x: 8, y: 3, w: 8, d: [say('Yellow flowers. The exact yellow of the dried one in the history room display case.')] },
+      { x: 6, y: 4, d: 'sit_bench' }, { x: 17, y: 4, d: 'sit_bench' }
+    ]
+  };
+
+  R.gym = {
+    name: 'Gymnasium', floor: '1F', theme: 'gym', music: 'hall', duskMusic: 'twilight', spawn: [11, 1],
+    map: [
+      '##WWWW#####dd#####WWWW##',
+      '#mmmm..............mmmm#',
+      '#......................#',
+      '#......................#',
+      '#......................#',
+      '#......................#',
+      '#......................#',
+      '#......................#',
+      '#......................#',
+      '#......................#',
+      '#==....................#',
+      '#==....................#',
+      '########################'
+    ],
+    exits: [{ x: 11, y: 0, to: 'hall1f', tx: 2, ty: 4, dir: 1 }, { x: 12, y: 0, to: 'hall1f', tx: 2, ty: 4, dir: 1 }],
+    obj: [
+      { x: 1, y: 10, w: 2, h: 2, d: [{ id: 'bleachers', hint: true, lines: ['Under the bleachers: old gum, a lost shoelace, and a folded note.', '"IF YOU\'RE READING THIS, IT\'S STILL THURSDAY. —T.V."', 'The ink is faded, like it was written years ago. Theo is sixteen.'], do: { clue: 'c_note_tv' } }] },
+      { x: 1, y: 1, w: 4, d: [say('Gym mats. They smell like 1977.')] },
+      { x: 19, y: 1, w: 4, d: [say('More mats. Someone has drawn a hopscotch grid on one, numbered 1 to 13. There is no 14.')] }
+    ]
+  };
+
+  R.lostfound = {
+    name: 'Lost & Found', floor: 'Hidden', theme: 'anomaly', music: 'anomaly', keepMusic: true, glitch: 0.25, secret: true, timeless: true, spawn: [8, 8],
+    map: [
+      '################',
+      '#x..x....x...x.#',
+      '#..............#',
+      '#.~....x....~..#',
+      '#..............#',
+      '#x.....~.....x.#',
+      '#..............#',
+      '#..x.......x...#',
+      '#..............#',
+      '########d#######'
+    ],
+    npcs: [{ id: 'theo', talk: 'theo_lost', x: 8, y: 4, dir: 0, ghost: true, if: { flag: 'L.theo_missing' } }],
+    enter: [{ scene: 'lf_enter', onceEver: true }],
+    exits: [{ x: 8, y: 9, to: 'lobby', tx: 3, ty: 4, dir: 0 }],
+    obj: [
+      { x: 1, y: 1, d: [say('A 1977 sweater vest. The name tag says F. BRAM.')] },
+      { x: 4, y: 1, d: [{ id: 'pip', hint: true, lines: ['A small cat collar with a bell that does not ring.', '"PIP. If found, call C. Marrow."'], do: { clue: 'c_pip' } }] },
+      { x: 9, y: 1, d: [say('A whistle on a lanyard, engraved: "R. Dunmore — Best Coach, 1977."', 'Coach Dunmore looks about forty. Today.')] },
+      { x: 13, y: 1, d: [say('A stack of letters tied with string, all addressed to "Tomorrow." None of them were ever sent.')] },
+      { x: 7, y: 3, d: [say('A box of name tags. Hundreds of them. You do not recognize a single name.', 'That is the point.')] },
+      { x: 1, y: 5, d: [say('A bell clapper, the size of your arm. Removed from something very large.')] },
+      { x: 13, y: 5, d: [say('A sketchbook. Every page shows the same grey door, labelled 2-F.', 'On the inside cover: "June S." She lost this a long time ago and never knew.')] },
+      { x: 3, y: 7, d: [say('Someone\'s first day of school. Just the feeling of it, folded up like a note.')] },
+      { x: 11, y: 7, d: [say('A pair of tweed-colored glasses, mended with tape. A tag: "A. GREY — 1977."')] }
+    ]
+  };
+
+  R.sublevel = {
+    name: 'The Stillwell', floor: 'Below', theme: 'sub', music: 'sublevel', keepMusic: true, glitch: 0.1, secret: true, timeless: true, spawn: [9, 10],
+    map: [
+      '####################',
+      '#.....xx....xx.....#',
+      '#..................#',
+      '#.....wwwwwwww.....#',
+      '#....wwwwwwwwww....#',
+      '#....wwwwwwwwww....#',
+      '#....wwwwwwwwww....#',
+      '#.....wwwwwwww.....#',
+      '#..................#',
+      '#..x..........x....#',
+      '#..................#',
+      '#........S.........#',
+      '####################'
+    ],
+    triggers: [{ x: 4, y: 8, w: 12, h: 1, scene: 'stillwell', if: { not: 'ch1_done' } }],
+    exits: [{ x: 9, y: 11, to: 'janitor', tx: 8, ty: 5, dir: 0 }],
+    obj: [
+      { x: 3, y: 9, d: [say('Old pipes, with brass labels: "TO: EVERY CLOCK."')] },
+      { x: 14, y: 9, d: [{ id: 'ledger', hint: true, lines: ['A ledger titled THINGS KEPT.', 'A heron. A flower. A boy named Felix. A teacher named Aldous. A cat named Pip. A Thursday.', 'The newest entry is in fresh ink. It is your name.', 'Next to it: "Pending."'], do: { clue: 'c_ledger' } }] },
+      { x: 6, y: 1, w: 2, d: [say('Crates stamped "HALLOWAY — CENTENNIAL DECORATIONS." Never opened.')] },
+      { x: 12, y: 1, w: 2, d: [say('More crates: "TOMORROW." Empty.')] },
+      { x: 5, y: 3, w: 10, h: 5, d: [
+        { if: { flag: 'ch1_done' }, lines: ['The Stillwell. Perfectly round. Perfectly still.', 'Your reflection is asleep at a desk.'] }
+      ] }
+    ]
+  };
+})(window.IS.data);
+
+</script>
+<script>/* data/npcs.js */
+// Characters. sched: [startMinute, room, x, y, facing, {if, vary, wander}]
+// A null room means "gone home". notes: profile lines that appear in the
+// notebook as you learn more (each gated by a condition).
+(function (D) {
+  D.npcs = {
+    mira: {
+      name: 'Mira Okafor', short: 'Mira', role: 'Class President, 2-B', voice: 560,
+      look: { skin: '#8a5a3c', hair: '#1c1418', hs: 'bun', top: '#2b3a67', bot: '#33334a', acc: 'ribbon', accC: '#c8323c' },
+      sched: [[465, 'c2b', 15, 8, 2], [480, 'c2b', 11, 4, 1], [720, 'cafe', 12, 5, 0], [780, 'c2b', 11, 4, 1],
+        [900, 'library', 6, 8, 1, { vary: [['library', 6, 8], ['art', 13, 8], ['courtyard', 7, 9]] }],
+        [1080, 'rooftop', 11, 3, 0, { if: { bond: { mira: 2 } } }], [1320, null]],
+      notes: [
+        { text: 'Your seatmate for two years. Runs the student council, the yearbook and, apparently, your life.' },
+        { if: { insight: { mira: 2 } }, text: 'She is giving the speech at the Final Assembly. She says it is "basically done."' },
+        { if: { clue: 'c_speech' }, text: 'She has written that speech 213 times. Every draft is dated today.' },
+        { if: { insight: { mira: 3 } }, text: 'Goes to the roof in the evening "to look at the lights hold still."' },
+        { if: { phase: 2 }, text: 'Does not remember any loop. Or says she does not.' }
+      ]
+    },
+    theo: {
+      name: 'Theo Vance', short: 'Theo', role: 'A/V Club, Conspiracy Department', voice: 700,
+      look: { skin: '#e8c09a', hair: '#7a4a22', hs: 'cap', top: '#d9782e', bot: '#3a4458', accC: '#2f6a8c' },
+      absentIf: { flag: 'L.theo_missing' }, awareIf: { flag: 'theo_saved' },
+      sched: [[465, 'c2b', 5, 6, 1], [720, 'av', 6, 2, 1], [780, 'c2b', 5, 6, 1], [900, 'av', 6, 2, 1], [1140, 'courtyard', 18, 9, 0], [1260, null]],
+      notes: [
+        { text: 'Runs the A/V closet, which he calls the Truth Closet. Has a theory about everything.' },
+        { if: { clue: 'c_theo_wall' }, text: 'Obsessed with a 1977 fire drill where the head count came up one short.' },
+        { if: { flag: 'L.theo_missing' }, text: 'Gone. Nobody remembers him.' },
+        { if: { flag: 'theo_saved' }, text: 'You pulled him out of the Lost & Found. Now he remembers every loop too.' }
+      ]
+    },
+    june: {
+      name: 'June Sato', short: 'June', role: 'Art Club', voice: 480,
+      look: { skin: '#f0cfa8', hair: '#151018', hs: 'long', top: '#6a8a6a', bot: '#2f2f3a', acc: 'apron', accC: '#e6dcc4' },
+      sched: [[465, 'art', 8, 3, 2], [1200, null]],
+      notes: [
+        { text: 'Quiet. Speaks in fragments. Always in the art room.' },
+        { if: { clue: 'c_drawing' }, text: 'Keeps drawing a door labelled 2-F without knowing why.' },
+        { if: { flag: 'd.2f' }, text: 'Her drawings were right. There was a room 2-F.' }
+      ]
+    },
+    grey: {
+      name: 'Mr. Aldous Grey', short: 'Mr. Grey', role: 'History Teacher', voice: 300, aware: true,
+      look: { skin: '#e2c2a2', hair: '#b8b4ae', hs: 'bald', top: '#7a6248', bot: '#4a4038', acc: 'tie', accC: '#5a2a2a', acc2: 'glasses' },
+      sched: [[465, 'history', 10, 1, 0], [1140, 'lobby', 13, 7, 0], [1260, 'history', 10, 1, 0]],
+      notes: [
+        { text: 'Teaches history. Seems to know the lesson plan by heart. Maybe too well.' },
+        { if: { flag: 'grey_confided' }, text: 'Has lived this Thursday since 1977. Has stopped counting the loops.' },
+        { if: { flag: 'k.grey_felix' }, text: 'Was the teacher doing the head count during the 1977 fire drill. Still blames himself.' },
+        { if: { flag: 'felix_delivered' }, text: 'Knows now that Felix was only hiding.' }
+      ]
+    },
+    marrow: {
+      name: 'Ms. Celeste Marrow', short: 'Ms. Marrow', role: 'Chemistry Teacher', voice: 420,
+      look: { skin: '#f2d4c0', hair: '#b4442c', hs: 'long', top: '#e9edf0', bot: '#30303c', acc: 'coat' },
+      sched: [[465, 'chem', 10, 1, 0], [1200, 'office', 9, 5, 2, { if: { phase: 2, noclue: 'c_meeting' } }], [1320, null]],
+      notes: [
+        { text: 'Strict about goggles. Strict about everything.' },
+        { if: { clue: 'c_meeting' }, text: 'Meets with the principal after hours. Part of something called the Bellwether.' },
+        { if: { flag: 'k.marrow_truth' }, text: 'Keeps the loop going because in it, her cat Pip is still alive.' }
+      ]
+    },
+    coach: {
+      name: 'Coach Ray Dunmore', short: 'Coach', role: 'P.E. Teacher', voice: 360,
+      look: { skin: '#c88a5e', hair: '#2a2420', hs: 'short', top: '#2f7a4a', bot: '#2f7a4a', acc: 'whistle' },
+      sched: [[465, 'gym', 6, 4, 0], [720, 'cafe', 3, 5, 0], [780, 'gym', 6, 4, 0], [1080, null]],
+      notes: [
+        { text: 'Loud, cheerful, tells one joke.' },
+        { if: { clue: 'c_joke' }, text: 'Tells the same joke every loop and believes it is brand new.' },
+        { if: { flag: 'k.coach_pain' }, text: 'Gets headaches whenever something new happens. Like the building is flinching.' }
+      ]
+    },
+    vell: {
+      name: 'Mrs. Ines Vell', short: 'Mrs. Vell', role: 'Librarian', voice: 380, aware: true,
+      look: { skin: '#e8d8cc', hair: '#e8e4ec', hs: 'bun', top: '#6a4a8a', bot: '#3a2a4a', acc2: 'glasses' },
+      sched: [[0, 'library', 10, 8, 0]],
+      notes: [
+        { text: 'The librarian. Never seems to leave the library.' },
+        { if: { clue: 'c_welcome' }, text: 'Greeted you like an old regular. She remembers. Somehow.' },
+        { if: { flag: 'archive_hint' }, text: '"I am the library, dear. Or what it became after reading itself too many times."' }
+      ]
+    },
+    okon: {
+      name: 'Okon', short: 'Okon', role: 'Custodian', voice: 260,
+      look: { skin: '#5a3a28', hair: '#2a2a2a', hs: 'cap', top: '#3a5a7a', bot: '#3a5a7a', accC: '#2a3a4a' },
+      sched: [[465, 'lobby', 13, 6, 0, { wander: 1 }], [720, 'hall1f', 12, 3, 0, { wander: 1 }], [900, 'hall2f', 18, 3, 0, { wander: 1 }], [1080, 'hall1f', 24, 3, 0, { wander: 1 }], [1320, null]],
+      notes: [
+        { text: 'The janitor. Hums constantly. Says very little.' },
+        { if: { clue: 'c_okon' }, text: 'Carries a brass key tagged STILLWELL.' },
+        { if: { flag: 'open_basement' }, text: 'Opened the way under the school for you. "Don\'t drink the water."' }
+      ]
+    },
+    hask: {
+      name: 'Principal Hask', short: 'Hask', role: 'Principal', voice: 220, aware: true,
+      look: { skin: '#d8d4cc', hair: '#141218', hs: 'short', top: '#1c1a22', bot: '#1c1a22', acc: 'tie', accC: '#3a3446' },
+      sched: [[465, 'office', 7, 2, 0], [1200, 'office', 6, 5, 3, { if: { phase: 2, noclue: 'c_meeting' } }], [1320, 'office', 7, 2, 0], [1380, 'courtyard', 12, 10, 1]],
+      notes: [
+        { text: 'The principal. Formal. Precise. Unsettling.' },
+        { if: { clue: 'c_hask' }, text: 'Does not blink. Does not seem to breathe.' },
+        { if: { clue: 'c_meeting' }, text: 'Leads the Bellwether. Wants the student who remembers to "be encouraged to forget."' }
+      ]
+    },
+    felix: {
+      name: 'Felix Bram', short: 'Felix', role: 'Class 2-F, 1977', voice: 640, aware: true, ghost: true,
+      look: { skin: '#e8d0b0', hair: '#6a4a2a', hs: 'short', top: '#8a7a4a', bot: '#5a5040', acc: 'tie', accC: '#4a5a3a' },
+      sched: [],
+      notes: [
+        { text: 'A boy from 1977, waiting in Room 2-F for a head count.' },
+        { if: { insight: { felix: 2 } }, text: 'Wants to be an astronomer. Does not want to miss the eclipse "tomorrow."' },
+        { if: { flag: 'felix_message' }, text: 'He was hiding in the supply closet during the drill. He meant to jump out and scare Mr. Grey.' }
+      ]
+    },
+    priya: {
+      name: 'Priya Nair', short: 'Priya', role: 'Debate Team', voice: 600, profile: true,
+      look: { skin: '#b07a52', hair: '#1a1214', hs: 'long', top: '#8a2a4a', bot: '#2a2a3a' },
+      sched: [[465, 'hall2f', 12, 3, 0, { wander: 1 }], [720, 'cafe', 19, 8, 2], [780, 'hall2f', 12, 3, 0, { wander: 1 }], [1020, null]],
+      notes: [{ text: 'Debate captain. Will argue with a wall. Has argued with this wall.' }]
+    },
+    dex: {
+      name: 'Dex Moreau', short: 'Dex', role: 'Skater, Allegedly', voice: 520,
+      look: { skin: '#d4a07a', hair: '#e0c050', hs: 'spiky', top: '#4a4a4a', bot: '#2a3a6a' },
+      sched: [[465, 'lobby', 6, 6, 3], [900, 'courtyard', 8, 10, 0, { wander: 1 }], [1140, null]],
+      notes: [{ text: 'Tries to kickflip over things. Mostly fails. Very positive about it.' }]
+    },
+    ama: {
+      name: 'Ama Boateng', short: 'Ama', role: 'Professional Gossip', voice: 660,
+      look: { skin: '#5e3a26', hair: '#1a1214', hs: 'bun', top: '#c9a24a', bot: '#3a2a2a' },
+      sched: [[465, 'c2b', 7, 4, 1], [720, 'cafe', 20, 4, 1], [780, 'c2b', 7, 4, 1], [900, null]],
+      notes: [{ text: 'Knows everything about everyone. Except, it turns out, the important things.' }]
+    }
+  };
+
+  // Voices that are not people
+  D.speakers = {
+    well: { name: 'The Stillwell', portrait: 'orb', voice: 140 },
+    pa: { name: 'Intercom', voice: 300 }
+  };
+})(window.IS.data);
+
+</script>
+<script>/* data/story.js */
+// Story: every NPC's dialogue (first matching entry wins) and named scenes.
+// Line format: "@speaker text" or plain narration. {name} {loop} {time} are substituted.
+// Entry keys: id, if, once (per loop), onceEver, lines | pool, do, choices[{t, if, lines, do, goto}], goto
+(function (D) {
+  const T = D.dialogue, S = D.scenes;
+
+  // ======================= SCENES =======================
+  S.intro = {
+    lines: [
+      'A bell. Somewhere far away, a bell is ringing.',
+      'You lift your head off a desk. There is a crease on your cheek and a taste in your mouth like old pennies.',
+      '@mira {name}. {name}! Homeroom is almost over. Did you sleep here?',
+      '@mira ...Kidding. Mostly. You look like you just saw a ghost.'
+    ],
+    choices: [
+      { t: 'I had the weirdest dream.', lines: ['@mira Tell me at lunch. Today is way too big for dreams.'] },
+      { t: 'What day is it?', lines: ['@mira Thursday, October 13th. The last normal Thursday ever. You know that.'] },
+      { t: 'Who are you?', lines: ['@mira Wow. Rude! Mira Okafor. Class president. Your seatmate for two years?', '@mira You really hit your head, huh.'] }
+    ],
+    goto: 'intro2'
+  };
+  S.intro2 = {
+    lines: [
+      '@mira Tomorrow is the Final Assembly. Halloway Academy closes its doors, forever, and I have to give the speech.',
+      '@mira So today, try to actually enjoy it. Look around. Say goodbye to stuff.',
+      '@mira And maybe do not fall asleep in history.',
+      'She goes back to her seat. Outside the window, a single cloud is drifting past a single tree.',
+      '(Tip: walk with the arrows or WASD. Talk and inspect with Z or Enter. Open your Notebook with N.)'
+    ],
+    do: { set: 'met.mira' }
+  };
+
+  // 'loop_start' is dynamic: picks the right wake-up depending on progress
+  D.wakeups = [
+    { if: { phase: 3 }, lines: ['The bell. The desk. The pennies.', 'Loop {loop}. Somewhere under your feet, something very old is holding its breath.', '@mira {name}! Homeroom is almost—', '@mira ...Why are you looking at the floor like that?'] },
+    { if: { phase: 2 }, lines: ['The bell. The desk. The pennies.', 'Loop {loop}.', '@mira {name}. {name}! Homeroom is almost over. Did you sleep h—'],
+      choices: [
+        { t: '...here? Yes. Every night, apparently.', lines: ['@mira Okay, psychic. Creepy, but okay.', '@mira Get up. Big day. Last day.'] },
+        { t: '(Say nothing. Just watch her.)', lines: ['@mira ...You look like you just saw a ghost.', 'She says it exactly the way she said it the last {loop} times.'] }
+      ] },
+    { if: { loop: [2] }, lines: ['A bell. The same bell.', 'You lift your head off the desk. The crease on your cheek. The penny taste.', '@mira {name}. {name}! Homeroom is almost over. Did you sleep here?', '@mira ...Kidding. Mostly. You look like you just saw a ghost.'],
+      choices: [
+        { t: 'You said that yesterday.', lines: ['@mira Yesterday was Wednesday, weirdo. We barely talked. You were drawing turtles.', 'You were not drawing turtles. You were here. It was today.'], do: { clue: 'c_repeat' } },
+        { t: 'What day is it?', lines: ['@mira Thursday. October 13th. Did you hit your head again?', 'Again.'], do: { clue: 'c_repeat' } }
+      ] }
+  ];
+
+  S.enter2f = {
+    lines: ['The air inside is cold and smells like pencil shavings and rain from a long time ago.', 'Dust hangs in the light, perfectly still. Your footsteps do not echo.', 'Someone is sitting by the window.'],
+    do: { ach: 'room2f', glitch: 0.8, shake: 0.6 }
+  };
+
+  S.meeting = {
+    id: 'meeting',
+    lines: [
+      'Voices. You duck behind the filing cabinet before anyone sees you.',
+      '@hask The Bellwether holds?',
+      '@marrow It holds. The chalk is still chalk. The bell is still the bell.',
+      '@marrow But the student in 2-B is remembering, Hask. Asking questions. Mr. Grey looks at them like they are a miracle.',
+      '@hask Then the student must be... encouraged to forget.',
+      '@marrow Aldous won\'t like it.',
+      '@hask Aldous resigned. Again. As he does every afternoon.',
+      'They leave through a door behind the bookshelf. When you look, there is no door behind the bookshelf.'
+    ],
+    do: { clue: 'c_meeting', glitch: 0.7, sfx: 'glitch' }
+  };
+
+  D.gateScenes = [
+    { if: { n: { gate: 2 } }, lines: ['You step into the fog again. You walk. You do not stop walking.', 'At some point, you realize you have been walking toward the school the whole time.'], do: { inc: 'gate', warp: ['courtyard', 12, 2, 0] } },
+    { lines: ['You push the gate open and step into the fog.', 'You walk for a long time. The street is gone. The sound of traffic is gone. There is only white.', 'Then the white thins out, and you are standing at the front of the school.', 'Facing it.'], do: { clue: 'c_fog', inc: 'gate', warp: ['courtyard', 12, 2, 0], glitch: 0.6 } }
+  ];
+
+  S.sit_bench = {
+    lines: ['A bench. You could sit here a while and let the day go by.'],
+    choices: [
+      { t: 'Sit until the next bell', if: { time: [0, 900] }, lines: ['You sit. The light moves across the floor at exactly the speed it always does.'], do: { nextBell: true } },
+      { t: 'Sit until evening', if: { time: [0, 1080] }, lines: ['You sit, and the afternoon pours past you like honey.'], do: { timeTo: 1080 } },
+      { t: 'Sit until midnight', lines: ['You sit and watch the day run out.'], do: { endDay: true } },
+      { t: 'Stand up', lines: [] }
+    ]
+  };
+
+  D.lostFound = [
+    { if: { flag: ['L.theo_missing', 'd.forgotten'] }, lines: ['The Lost & Found box. Theo\'s hoodie is on top, still warm.', 'The box is deeper than it looks. Much deeper.'],
+      choices: [
+        { t: 'Reach inside', lines: ['You reach in. Past the hoodie. Past the elbow. Past the shoulder.', 'Something on the other side takes your hand and pulls.'], do: { warp: ['lostfound', 8, 8, 1], glitch: 1, sfx: 'glitch' } },
+        { t: 'Not yet', lines: [] }
+      ] },
+    { if: { flag: 'L.theo_missing' }, id: 'lf_tag', lines: ['The Lost & Found box. On top of the pile: an orange hoodie. Theo\'s.', 'The tag inside reads: “CLAIMED BY: NO ONE.”'], do: { clue: 'c_tag' } },
+    { if: { flag: 'd.forgotten' }, lines: ['The Lost & Found box. It hums, very softly, like a refrigerator full of memories.'],
+      choices: [{ t: 'Reach inside', lines: ['Your arm goes in to the shoulder. Something pulls.'], do: { warp: ['lostfound', 8, 8, 1], glitch: 1 } }, { t: 'Leave it', lines: [] }] },
+    { lines: ['LOST & FOUND. A sweater. A single glove. A retainer. A mood ring stuck on black.', 'Nobody ever claims anything.'] }
+  ];
+
+  S.lf_enter = { lines: ['You are standing in a room made of everything nobody came back for.', 'It is very quiet. Not peaceful quiet. Waiting quiet.'], do: { shake: 0.5 } };
+
+  D.juneEasel = [
+    { if: { flag: 'd.2f' }, lines: ['June\'s canvas. The grey door again, but now it is slightly open, and there is light behind it.'] },
+    { if: { clue: 'c_drawing' }, lines: ['June\'s canvas: a grey door with a small brass plate. 2-F.'] },
+    { lines: ['A canvas turned to face the wall. June has written “NOT DONE” on the back.'] }
+  ];
+
+  D.bellPanel = [
+    { if: { phase: 2, clue: 'c_bell', time: [1425, 1440] }, lines: ['The school bell control panel. The big brass switch labelled MANUAL is humming.', 'It is 11:5-something. Every clock in the building is leaning toward midnight.'],
+      choices: [
+        { t: 'Ring the bell yourself.', lines: ['You grab the switch with both hands.'], do: { ending: 'dismissal' } },
+        { t: 'Don\'t. (The chalkboard said not to trust it.)', lines: ['You let go. Your hands are shaking.'] }
+      ] },
+    { if: { phase: 2 }, lines: ['The bell control panel. The MANUAL switch is warm, like something on the other side is holding it.', 'You get the feeling it would only matter at the very end of the day.'] },
+    { lines: ['The school bell control panel. A big brass switch labelled MANUAL, and a sticker: “DO NOT TOUCH. THIS MEANS YOU, THEO.”'] }
+  ];
+
+  S.stillwell = {
+    lines: [
+      'The stairs end in a round chamber. In the middle, a spring: perfectly round, perfectly flat, like a coin of black glass.',
+      'Your reflection in it is not standing. Your reflection is asleep at a desk.',
+      'Something speaks. It does not use sound. It uses the space where sound would go.',
+      '@well STUDENT.',
+      '@well YOU ARE NOT SUPPOSED TO KEEP THINGS. ONLY I KEEP THINGS.',
+      '@well I KEPT A HERON. I KEPT A FLOWER. I KEPT A BOY WHO WAS HIDING. I KEPT A TEACHER WHO WAS COUNTING.',
+      '@well I KEPT A THURSDAY.',
+      '@well TOMORROW, THEY TEAR ME OUT OF THE GROUND AND POUR CONCRETE OVER THE HOLE.',
+      '@well SO THERE WILL BE NO TOMORROW.'
+    ],
+    choices: [
+      { t: 'Why do you keep things?', lines: ['The water does not ripple. But it seems to flinch.', '@well ...NO ONE HAS EVER ASKED ME WHY.', '@well ASK ME AGAIN WHEN YOU UNDERSTAND THE QUESTION.'], do: { set: 'well_why' } },
+      { t: 'Let them go.', lines: ['@well YOU ARE ONE OF THEM. SHOULD I LET YOU GO, TOO?', '@well WHERE WOULD YOU GO? THERE IS NOTHING PAST THE FOG. I CHECKED.'] },
+      { t: 'You can\'t keep me.', lines: ['@well I ALREADY DO. LOOK AT THE LEDGER.', '@well BUT YOU ARE... DIFFICULT TO HOLD. LIKE WATER IN A HAND.'] }
+    ],
+    goto: 'stillwell2'
+  };
+  S.stillwell2 = {
+    lines: [
+      '@well GO BACK UP, STUDENT. LIVE YOUR THURSDAY. I WILL BE HERE.',
+      '@well I AM ALWAYS HERE.',
+      'The chamber tilts. The stairs pour you upward like water going the wrong way.'
+    ],
+    do: { set: 'ch1_done', ach: 'chapter1', clue: 'c_ledger', card: { big: 'END OF CHAPTER ONE', small: 'Homeroom', dur: 4.5, sfx: 'loop' }, warp: ['janitor', 8, 5, 0], glitch: 1.2, shake: 1 }
+  };
+
+  // ======================= NPC DIALOGUE =======================
+  T.mira = [
+    { id: 'mira_roof', if: { room: 'rooftop', time: [1260, 1440], bond: { mira: 3 }, phase: 2, not: 'L.mira_roof' },
+      lines: ['@mira You found me. Nobody ever comes up here this late.', '@mira I like it. The town lights look like they are holding still. Like someone pressed pause.',
+        '@mira Hey, {name}... do you ever feel like today already happened?', '@mira Like if we just stayed up here, tomorrow could not find us.'],
+      choices: [
+        { t: 'Let\'s stay here. Forever.', lines: ['@mira ...Okay.', 'She leans her head against your shoulder. Below you, the bell starts to ring, very far away.'], do: { ending: 'forever' } },
+        { t: 'Tomorrow has to come eventually.', lines: ['@mira Yeah. I know. I just... don\'t want to be the one who says goodbye.', '@mira Thanks for coming up here. Seriously.'], do: { set: 'L.mira_roof', bond: { mira: 1 } } }
+      ] },
+    { id: 'mira_theo', if: { flag: 'L.theo_missing', noclue: 'c_theo_gone' },
+      lines: ['@mira Theo? Theo who?', '@mira There is no Theo in our class, {name}. Are you okay? You look pale.', 'She means it. There is no flicker of recognition at all.', 'His seat is empty. It has always been empty, according to everyone.'],
+      do: { clue: 'c_theo_gone', glitch: 0.4 } },
+    { id: 'mira_tell', once: true, if: { phase: 2, insight: { mira: 2 }, not: 'L.mira_ally' },
+      lines: ['@mira You have that look again. The one where you know what I am about to say.'],
+      choices: [
+        { t: 'Tell Mira about the loop.', lines: ['You tell her. All of it. The bell, the desk, the pennies, the {loop} Thursdays.', '@mira ...', '@mira Okay. Say I believe you. Say I am not just humoring you because you look terrified.', '@mira Then what do you need from me?', '@mira Because whatever it is, I can probably organize it. That is my whole thing.'], do: { set: 'L.mira_ally', bond: { mira: 2 } } },
+        { t: 'Not today.', lines: ['@mira Okay. Mysterious. I respect it.'] }
+      ] },
+    { id: 'mira_lunch', once: true, if: { time: [720, 780] },
+      lines: ['@mira Mystery Meat Thursday. The final Mystery Meat Thursday. It is almost emotional.', '@mira Sit with me? I need to practice not crying about the cafeteria.'],
+      choices: [
+        { t: 'Sit with Mira', lines: ['You sit. She tells you about the Final Assembly seating chart, which has four versions, color-coded.', '@mira Thanks. You are easy to be around. Even when you are weird.'], do: { bond: { mira: 1 } } },
+        { t: 'Maybe later', lines: ['@mira Your loss. I am delightful at lunch.'] }
+      ] },
+    { id: 'mira_speech', once: true, if: { time: [900, 1080], bond: { mira: 1 } },
+      lines: ['@mira Oh. Hi. I am working on the speech.', 'She has a stack of paper in front of her. A tall stack.'],
+      choices: [
+        { t: 'How many drafts is that?', lines: ['@mira Uh. Two hundred and thirteen.', '@mira I know. I KNOW. Every time I finish it, it feels wrong, so I start over. Every single one is dated today because I keep doing it today.', '@mira Do not tell anyone.'], do: { clue: 'c_speech', bond: { mira: 1 }, item: 'draft' } },
+        { t: 'Want help?', lines: ['@mira From you? ...Actually, yes. Read this line. Does “Today is our last day” sound too sad?', 'You read it. It sounds exactly as sad as it is.', '@mira Yeah. That is what I thought.'], do: { bond: { mira: 1 } } }
+      ] },
+    { id: 'mira_eve', once: true, if: { time: [1080, 1320], room: 'rooftop' },
+      lines: ['@mira Oh! You found my spot.', '@mira I come up here when the student council gets loud. Which is always.', '@mira Stay a while, if you want. The sky does a nice thing around eight.'], do: { bond: { mira: 1 } } },
+    { if: { time: [465, 480] }, pool: [
+      ['@mira Homeroom attendance: present. Barely.'],
+      ['@mira Bell is about to ring. Look alive. Or at least look awake.'],
+      ['@mira Did you finish the history reading? ...Me neither. Do not tell anyone. I have a reputation.']
+    ] },
+    { if: { time: [480, 900] }, pool: [
+      ['@mira Shh. Class. Some of us are trying to absorb knowledge for the last time ever.'],
+      ['@mira Pass me a note later. Do not make it a turtle again.'],
+      ['@mira Grey is going off about empires again. I have heard this lecture before. Like, exactly this lecture.', 'She frowns, as if the thought stung.']
+    ] },
+    { pool: [
+      ['@mira Hey. Last day. Make it count, okay?'],
+      ['@mira I have a checklist for tomorrow. It has sub-checklists. I am fine. Everything is fine.'],
+      ['@mira If you see Theo, tell him the A/V cables for the assembly need to be labelled with something other than feelings.']
+    ] }
+  ];
+
+  T.theo = [
+    { id: 'theo_saved', if: { flag: 'theo_saved' }, pool: [
+      ['@theo Loop {loop}. I remember all of it now. Thanks for that. I think.', '@theo The chips in the vending machine are mocking me.'],
+      ['@theo I have started a new wall. It is about the wall. Meta-conspiracy.'],
+      ['@theo You know what is weird? Being forgotten felt like being a sock behind a dryer. You know what is weirder? I miss the quiet.']
+    ] },
+    { id: 'theo_loop', once: true, if: { phase: 2, insight: { theo: 1 }, not: 'theo_hint' },
+      lines: ['@theo Okay, you have the face. The face of someone who has seen the Truth.'],
+      choices: [
+        { t: 'The day is repeating, Theo.', lines: ['@theo A TIME LOOP? {name}. {name}. This is the best day of my life. Which I will apparently have again.',
+          '@theo Okay. Okay okay okay. Rule one of loops: things that do not reset are clues. Rule two: if anyone disappears, check the Lost & Found.',
+          '@theo Stuff nobody claims ends up there. It is basically physics.', '@theo ...Why are you looking at me like that?'], do: { set: 'theo_hint', bond: { theo: 1 } } },
+        { t: 'Never mind.', lines: ['@theo Fine. Keep your Truth. I will find my own.'] }
+      ] },
+    { id: 'theo_wall', once: true, if: { room: 'av' },
+      lines: ['@theo Close the door! ...Oh. It is you. Fine. Welcome to the Truth Closet.', 'He gestures at a corkboard drowning in red string.',
+        '@theo Okay so. 1977. Fire drill. Bell rings. Everybody files out. Head count comes up one short.',
+        '@theo The missing kid is never found. And the school says it never happened. There is no record. I checked. I checked a LOT.',
+        '@theo And now the school is closing tomorrow? Coincidence? I think NOT.',
+        '@theo Also, the vending machine on the first floor has had the same three bags of chips since September. Explain that.'],
+      do: { clue: 'c_theo_wall', bond: { theo: 1 } } },
+    { pool: [
+      ['@theo Psst. Do you ever feel like the hallway is longer in the afternoon? I measured it. It is.'],
+      ['@theo I have a theory about the cafeteria. I can not tell you yet. The cafeteria might hear.'],
+      ['@theo Meet me in the A/V closet sometime. Second floor. Knock first. The Truth is shy.']
+    ] }
+  ];
+  T.theo_lost = [
+    { id: 'theo_rescue',
+      lines: ['Theo is sitting cross-legged in the middle of the room, see-through at the edges, like a photo left in the sun.',
+        '@theo Oh. Hey. Hi. You can see me?', '@theo Nobody could see me. I said hi to Mira and she walked through the place where I was standing.',
+        '@theo It is really quiet in here. Like being a sock behind a dryer. Forever.'],
+      choices: [
+        { t: 'Take his hand.', lines: ['You hold out your hand. He stares at it like it is a magic trick.', '@theo You came back for me. Nobody comes back for socks.',
+          'He takes it. His hand is cold, then normal, then just a hand.', 'The room exhales.'],
+          do: { set: 'theo_saved', unset: 'L.theo_missing', ach: 'claimed', bond: { theo: 2 }, warp: ['lobby', 3, 4, 0], glitch: 1 } }
+      ] }
+  ];
+
+  T.june = [
+    { id: 'june_2f', once: true, if: { visited: 'c2f' },
+      lines: ['@june You went inside.', '@june I can tell. You smell like chalk from a different decade.', '@june ...Was it the right door? The one I draw?'],
+      choices: [{ t: 'It was exactly your door.', lines: ['@june Oh.', 'She looks at her hands like they belong to someone braver.', '@june I thought I was just weird. I am still weird. But now I am also right.'], do: { bond: { june: 2 } } }] },
+    { id: 'june_count', once: true, if: { phase: 2, bond: { june: 1 } },
+      lines: ['@june I have drawn that door three hundred and six times.', '@june I count. Counting is how I stay on the floor.', '@june I think it was a door I walked past every day. Before someone painted over it.'], do: { bond: { june: 1 } } },
+    { id: 'june_first', once: true,
+      lines: ['@june ...Oh. Hi.', '@june Do not look at it yet. It is not finished.'],
+      choices: [
+        { t: 'Look anyway.', lines: ['She lets you. On the canvas: a door painted in careful grey. A small brass plate reads 2-F.', '@june I keep drawing it. Every time I close my eyes, it is there.', '@june There is no 2-F. I checked. There is just wall.'], do: { clue: 'c_drawing', bond: { june: 1 } } },
+        { t: 'Okay. I\'ll wait.', lines: ['@june ...Thank you.', '@june Most people look anyway.'], do: { bond: { june: 1 } } }
+      ] },
+    { pool: [
+      ['@june The light in here is the same every day. That is good for painting. That is bad for other things.'],
+      ['@june I am painting the courtyard. The cloud has not moved since I started.'],
+      ['@june Shh. The paint is drying. It is shy.']
+    ] }
+  ];
+
+  T.grey = [
+    { id: 'grey_felix_msg', if: { flag: 'felix_message', not: 'felix_delivered' },
+      lines: ['@grey {name}. You have been to 2-F again. I can see it on you.'],
+      choices: [{ t: 'Felix says the head count was right.', lines: [
+        '@grey ...What?', 'You tell him. The supply closet. The star in the doorframe. A fourteen-year-old who wanted to jump out and scare his teacher.',
+        '@grey He was hiding.', '@grey He was hiding, and I counted twenty-one, and I told the fire marshal twenty-one, and they closed the door, and the bell rang, and it never stopped ringing.',
+        'Mr. Grey takes off his glasses. He does not put them back on for a long time.', '@grey Thank you. I have waited a very long time for someone to tell me it was not my fault.',
+        '@grey I am not sure it is true. But I am grateful someone said it.'], do: { set: 'felix_delivered', ach: 'headcount', bond: { grey: 2 } } }] },
+    { id: 'grey_bw', once: true, if: { flag: 'd.bellwether', not: 'k.grey_bw' },
+      lines: ['@grey So you have found out about the Bellwether.', '@grey Celeste. Hask. A few others over the decades. Teachers who decided an endless Thursday is a kindness.',
+        '@grey No student ever fails. No one ever has to say goodbye. No one ever has to grow old and find out how it ends.', '@grey I was a member once. I resigned.', '@grey I resign every afternoon. It never takes.'],
+      do: { set: 'k.grey_bw', bond: { grey: 1 } } },
+    { id: 'grey_felix', once: true, if: { clue: 'c_felix', not: 'k.grey_felix' },
+      lines: ['@grey Felix Bram.', '@grey You have met him. Of course you have. You are the first person who could.',
+        '@grey Second row, by the window. He wanted to be an astronomer. He was very excited about an eclipse on the fourteenth.',
+        '@grey I was the one doing the head count, {name}. It was my job to count them. All of them.'],
+      do: { set: 'k.grey_felix', bond: { grey: 1 } } },
+    { id: 'grey_confide', if: { phase: 2, not: 'grey_confided' },
+      lines: ['@grey Sit down, {name}. Close the door.', '@grey How many times has it been for you? ...No. Do not tell me. I stopped counting somewhere past nine thousand.',
+        '@grey I have taught this Thursday since 1977. The same lesson plan. The same chalk. The same student asleep in the second row of 2-B.',
+        '@grey No. That last part is new. You are new.', '@grey You are the first person in nearly fifty years who has carried a memory across midnight.',
+        'He opens a drawer and takes out a brass pocketwatch.', '@grey Take this. The Second Hand. It keeps your time, not the school\'s.',
+        '@grey If a day goes wrong, you can wind it and start over. I have not had the heart to use it in a long time.'],
+      do: { set: 'grey_confided', item: 'watch', clue: 'c_grey', ach: 'secondhand', bond: { grey: 2 } } },
+    { id: 'grey_repeat', once: true, if: { loop: [2], maxPhase: 1 },
+      lines: ['@grey Halloway Academy was founded in 1921, over the old Stillwell spring.', '@grey Is this the first time you have heard me say that?', 'He looks at you for a long moment. Too long.', '@grey Hm. Forgive me. An old man\'s question.'] },
+    { id: 'grey_lesson', once: true,
+      lines: ['@grey Ah. A student who comes to history voluntarily. A rare bird.', '@grey Halloway Academy was founded in 1921, over the old Stillwell spring. The locals said its water could keep a flower fresh for a year.',
+        '@grey Superstition, of course. History is mostly superstition that got its paperwork in order.'], do: { bond: { grey: 1 } } },
+    { if: { time: [1140, 1260] }, lines: ['@grey I like to stand here in the evening and watch the door. In case someone comes back.'] },
+    { pool: [
+      ['@grey Empires do not fall, {name}. They refuse to stand up. There is a difference.'],
+      ['@grey Read chapter twelve. Or do not. It will still be chapter twelve tomorrow.'],
+      ['@grey The bell is always slightly early. Have you noticed? Nobody notices.']
+    ] }
+  ];
+
+  T.marrow = [
+    { id: 'marrow_pip', once: true, if: { clue: 'c_pip', not: 'k.marrow_truth' },
+      lines: ['@marrow What do you want. Goggles on, if you are staying.'],
+      choices: [
+        { t: 'I found Pip\'s collar.', lines: ['The color drains from her face.', '@marrow Where.', 'You tell her. She is quiet for a long time.',
+          '@marrow Do you know what happens tomorrow? The school closes. The kids scatter. I go home to an empty apartment.', '@marrow In here, it is always Thursday. Pip is always waiting at the door when I get home. Every night. Every single night.',
+          '@marrow So do not you dare judge me for wanting to keep that.'], do: { set: 'k.marrow_truth', bond: { marrow: 1 } } },
+        { t: 'Never mind.', lines: ['@marrow Then get out with goggles on.'] }
+      ] },
+    { id: 'marrow_sus', if: { phase: 2 }, pool: [
+      ['@marrow You have been asking questions. Questions are how accidents happen in a lab.'],
+      ['@marrow I know that look. Curiosity. I had it once. Then I had tenure.'],
+      ['@marrow Whatever you think you know, {name}, put it down slowly and back away.']
+    ] },
+    { id: 'marrow_first', once: true,
+      lines: ['@marrow Goggles on or get out.', '@marrow ...You are not in my class. Then get out with goggles on.'] },
+    { pool: [
+      ['@marrow The Bunsen burners are for science, not for feelings. Tell Theo.'],
+      ['@marrow Last day of chemistry ever. I am planning to explode nothing.'],
+      ['@marrow Do not touch the sample on bench one. I mean it.']
+    ] }
+  ];
+
+  T.coach = [
+    { id: 'coach_finish', once: true, if: { clue: 'c_joke', phase: 2 },
+      lines: ['@coach Hey, champ! Why did the photocopier quit the team?'],
+      choices: [
+        { t: '“It kept making the same play over and over.”', lines: ['@coach ...', '@coach How did you know the punchline? I made that up this morning!', 'He rubs his temple.',
+          '@coach Weird. Got a headache right behind the eyes. Like déjà vu with a hangover.', '@coach Happens every time somebody does something new around here. Like the building flinches.'], do: { set: 'k.coach_pain', bond: { coach: 1 } } },
+        { t: 'Let him tell it.', lines: ['@coach It kept making the same play over and over! HA!', 'Same pause. Same HA.'] }
+      ] },
+    { id: 'coach_joke2', once: true, if: { loop: [2] },
+      lines: ['@coach Hey, champ! Why did the photocopier quit the team?', '@coach It kept making the same play over and over! HA!', 'The same joke as yesterday. The same pause before the punchline. The same HA.',
+        '@coach Just came up with that this morning. Comedy gold.'], do: { clue: 'c_joke' } },
+    { id: 'coach_joke1', once: true,
+      lines: ['@coach Hey, champ! Why did the photocopier quit the team?', '@coach It kept making the same play over and over! HA!', '@coach Made that up this morning. You can have it. Free of charge.'], do: { bond: { coach: 1 } } },
+    { if: { time: [720, 780] }, lines: ['@coach Mystery Meat Thursday! Fuel of champions. Probably. Nobody has ever checked.'] },
+    { pool: [
+      ['@coach Laps! ...Not you. You look tired. Everyone looks tired today.'],
+      ['@coach Last gym class ever. I was going to do dodgeball, but it feels too much like a metaphor.'],
+      ['@coach Hydrate, champ. Life is long. Well. Days are long.']
+    ] }
+  ];
+
+  T.vell = [
+    { id: 'vell_book_return', once: true, if: { item: 'book', time: [1080, 1440] },
+      lines: ['@vell You brought it back. On the same day.', '@vell Nobody returns anything here, dear. Nothing ever leaves.', 'She stamps the card. The stamp says THURSDAY.'], do: { take: 'book', ach: 'overdue', bond: { vell: 1 } } },
+    { id: 'vell_archive', if: { phase: 2, not: 'archive_hint' },
+      lines: ['@vell You have noticed. Good. Noticing is the first chapter.', '@vell I am the library, dear. Or what the library became after it read itself too many times.',
+        '@vell There is a room for the things this school would rather forget. It is behind the third shelf of Local History.', '@vell Push gently. It is shy.'],
+      do: { set: 'archive_hint', bond: { vell: 1 } } },
+    { id: 'vell_first', onceEver: true,
+      lines: ['@vell Welcome back, dear. The same book as last time?'],
+      choices: [
+        { t: 'I\'ve never been here before.', lines: ['@vell Of course not. My mistake.', '@vell The years blur together. The days, on the other hand, do not blur at all.'], do: { clue: 'c_welcome' } },
+        { t: '...Sure?', lines: ['She slides a thin book across the desk without looking: “The Patient Clock.”', '@vell Due back today. Everything is due back today.'], do: { clue: 'c_welcome', item: 'book' } }
+      ] },
+    { if: { time: [1260, 1440] }, lines: ['@vell Libraries do not close, dear. They only pretend to.'] },
+    { pool: [
+      ['@vell Shh. The books are sleeping. Some of them for a very long time.'],
+      ['@vell Please do not reshelve anything. The shelves remember where things go. They hold grudges.'],
+      ['@vell If you cannot find a book, it is usually because it does not want to be found yet.'],
+      ['@vell You may borrow anything you like. You will find that it all comes back.']
+    ] }
+  ];
+
+  T.okon = [
+    { id: 'okon_open', if: { phase: 3, not: 'open_basement' },
+      lines: ['He stops humming.', '@okon So. You know what is under us.', '@okon The Stillwell. School is built on top of it like a lid on a pot.',
+        '@okon Every midnight I hear it. Not water. Breathing.', '@okon Basement stairs are in my closet. First floor, by the stairs. I will leave it open.', '@okon Do not drink the water.'],
+      do: { set: 'open_basement', clue: 'c_okon', bond: { okon: 1 } } },
+    { id: 'okon_floors', once: true, if: { phase: 2 },
+      lines: ['@okon You see it too, huh.', '@okon The floors. Spotless every morning. I have not touched a mop in years.', 'He shows you his key ring. One key is heavier than the rest, brass, tagged STILLWELL.', '@okon Not yet. Not for you. Not yet.'],
+      do: { clue: 'c_okon', bond: { okon: 1 } } },
+    { pool: [
+      ['He is humming. It sounds like the school bell, slowed way, way down.', '@okon Mm. Floors do not mop themselves.', '@okon ...Well. They do here.'],
+      ['@okon Mind the wet floor sign. There is no wet floor. There is never a wet floor. I just like the sign.'],
+      ['@okon Mm.']
+    ] }
+  ];
+
+  T.hask = [
+    { id: 'hask_night', if: { room: 'courtyard' },
+      lines: ['Principal Hask stands perfectly still, staring straight up.', '@hask Do you hear it, student? The day, straining at its stitches.', '@hask Go back inside. Midnight is not for students.'] },
+    { id: 'hask_p2', once: true, if: { phase: 2 },
+      lines: ['@hask You have been... repeating yourself, student.', '@hask Repetition is how we learn. Repetition is how we stay.', '@hask You would like to stay, would you not? Everyone does, eventually.'] },
+    { id: 'hask_first', once: true,
+      lines: ['@hask Ah. A student. In my office. Unscheduled.', '@hask Tomorrow is the Final Assembly. Everything must be perfect.', '@hask Everything IS perfect. Thursday is perfect.',
+        'He does not blink. You realize you have not seen him breathe, either.'], do: { clue: 'c_hask' } },
+    { pool: [
+      ['@hask Your attendance is exemplary, student. It always will be.'],
+      ['@hask Run along. The bell will tell you where to be.'],
+      ['@hask I have been principal here for a long time. I intend to remain principal for exactly as long.']
+    ] }
+  ];
+
+  T.felix = [
+    { id: 'felix_msg', once: true, if: { flag: 'k.grey_felix', not: 'felix_message' },
+      lines: ['@felix Did you find Mr. Grey? Is he coming to count us?'],
+      choices: [{ t: 'Mr. Grey still remembers you.', lines: ['@felix He does?', 'Felix flickers, brighter for a second.',
+        '@felix Then tell him the head count was right. Tell him I was just hiding in the supply closet. I was going to jump out and scare him. It was going to be so funny.',
+        '@felix And then the bell rang, and everyone left, and it never stopped ringing.', '@felix Tell him it is not his fault. Okay? Promise.'], do: { set: 'felix_message', bond: { felix: 1 } } }] },
+    { id: 'felix_stars', once: true, if: { clue: 'c_felix', bond: { felix: 1 } },
+      lines: ['@felix Do you like stars? I am going to be an astronomer.', '@felix There is an eclipse tomorrow. A total one. The moon walks right in front of the sun and everything goes quiet.',
+        '@felix I have been waiting for tomorrow for a really long time. It feels like a really long time.', '@felix That is silly. It has only been one day.'], do: { bond: { felix: 1 } } },
+    { id: 'felix_meet', onceEver: true,
+      lines: ['A boy sits at the desk by the window. Sweater vest. Hair parted with a ruler. He is slightly see-through, like a photo left in the sun.',
+        '@felix Oh! Hello. Is it time for the drill?', '@felix I am supposed to wait here. Mr. Grey said wait here and he would come back and count us.', '@felix He has not come back yet. What day is it?'],
+      choices: [
+        { t: 'Thursday.', lines: ['@felix Oh good. Still Thursday. I would hate to miss the eclipse tomorrow.'], do: { clue: 'c_felix' } },
+        { t: 'It\'s a lot later than you think.', lines: ['He flickers, like a bad TV channel.', '@felix That is not funny. It is Thursday. It is always Thursday.', '@felix ...It is always Thursday, isn\'t it.'], do: { clue: 'c_felix', glitch: 0.6 } }
+      ] },
+    { pool: [
+      ['@felix I counted the ceiling tiles. There are 214. Yesterday there were 214. That is good. That is consistent.'],
+      ['@felix Do you think Mr. Grey forgot about us?'],
+      ['@felix The window shows a different courtyard than it used to. I do not like looking anymore.']
+    ] }
+  ];
+
+  T.priya = [{ pool: [
+    ['@priya Did you know Halloway\'s mascot was a heron until 1977, and then it was just... a clock? Nobody voted on that. I checked the minutes.'],
+    ['@priya I am preparing a formal argument against tomorrow. Resolved: Thursday should continue. I am arguing the affirmative.', '@priya I always win.'],
+    ['@priya I have debated Mira on whether the Final Assembly needs a slideshow. She won. She always wins. Do not tell her I said that.']
+  ] }];
+  T.dex = [{ pool: [
+    ['@dex Bro. I tried to kickflip over the front gate and landed back on the same side. Twice. The fog is undefeated.'],
+    ['@dex Last day, huh? I am gonna ride the stair rail on the second floor. Mira said if I do she will personally end me.'],
+    ['@dex You ever notice the lobby smells like rain even when it is sunny? It is sick. I love it.']
+  ] }];
+  T.ama = [{ pool: [
+    ['@ama Supposedly the principal does not have a car. Or a house. Or a first name.'],
+    ['@ama Okay, gossip: Ms. Marrow buys cat food every Friday. She does not have a cat. Think about it.'],
+    ['@ama Theo says the vending machine is haunted. Theo also says the moon is a hologram, so.']
+  ] }];
+
+  // Scenes that delegate to dynamic lists (evaluated when the scene starts)
+  const dyn = { loop_start: 'wakeups', gate: 'gateScenes', lost_found_box: 'lostFound', june_easel: 'juneEasel', bell_panel: 'bellPanel' };
+  D.dynamicScenes = dyn;
+})(window.IS.data);
+
+</script>
+<script>/* data/meta.js */
+// Achievements & endings. "auto" achievements unlock when their condition passes.
+(function (D) {
+  D.achievements = [
+    { id: 'dejavu', title: 'Déjà Vu', desc: 'Wake up on Thursday. Again.', auto: { loop: [2] } },
+    { id: 'red_string', title: 'Red String', desc: 'Make your first deduction on the evidence board.' },
+    { id: 'conspiracy', title: 'Conspiracy Board', desc: 'Make every deduction in Chapter One.' },
+    { id: 'room2f', title: 'Between E and G', desc: 'Step inside a classroom that should not exist.' },
+    { id: 'secondhand', title: 'The Second Hand', desc: 'Earn the trust of someone who has been waiting fifty years.' },
+    { id: 'claimed', title: 'Claimed', desc: 'Bring back someone the world forgot.', secret: true },
+    { id: 'headcount', title: 'Head Count', desc: 'Deliver a message fifty years late.', secret: true },
+    { id: 'bellwether', title: 'Secret Handshake', desc: 'Uncover the society that keeps the day alive.' },
+    { id: 'chapter1', title: 'Beneath the Lid', desc: 'Complete Chapter One: Homeroom.' },
+    { id: 'archive', title: 'Shy Shelf', desc: 'Find the archive behind the library.', auto: { visited: 'archive' } },
+    { id: 'meat', title: 'Mystery Solved?', desc: 'Eat the Mystery Meat in three different loops.', auto: { n: { meat: 3 } } },
+    { id: 'gate', title: 'Long Walk Home', desc: 'Try to leave through the front gate three times.', auto: { n: { gate: 3 } } },
+    { id: 'overdue', title: 'Overdue', desc: 'Return a library book on the day it is due.' },
+    { id: 'night', title: 'Night Owl', desc: 'Still be at school at 11 PM.', auto: { time: [1380, 1440] } },
+    { id: 'monitor', title: 'Hall Monitor', desc: 'Visit every ordinary room in Halloway.', auto: { allRooms: true } },
+    { id: 'friend', title: 'Best Friends (Again)', desc: "Max out Mira's friendship in a single loop.", auto: { bond: { mira: 5 } } },
+    { id: 'loop10', title: 'Groundhog Scholar', desc: 'Live through ten Thursdays.', auto: { loop: [10] } },
+    { id: 'notebook', title: 'Full Notebook', desc: 'Collect 20 clues.', auto: { clues: 20 } },
+    { id: 'chips', title: 'Salt & Vinegar & Salt', desc: 'Buy the same chips five times.', auto: { n: { chips: 5 } }, secret: true },
+    { id: 'end_perfect', title: 'Perfect Attendance', desc: 'Reach the Perfect Attendance ending.', secret: true },
+    { id: 'end_forever', title: 'Thursday Forever', desc: 'Reach the Thursday Forever ending.', secret: true },
+    { id: 'end_dismissal', title: 'Early Dismissal', desc: 'Reach the Early Dismissal ending.', secret: true }
+  ];
+
+  // onLoop: checked when a new loop begins. future: endings planned for later chapters.
+  D.endings = {
+    perfect: {
+      title: 'Perfect Attendance', music: 'title',
+      onLoop: { loop: [7], maxPhase: 1 },
+      hint: 'What happens if you never ask why?',
+      blurb: 'You never connected the clues. Halloway was happy to keep you.',
+      lines: ['You stopped asking questions somewhere around the sixth Thursday.', 'Every morning: the bell. Every morning: Mira. Every morning, the same good day.',
+        'It is a nice day. It really is. The light is warm, and the cafeteria smells like Mystery Meat, and nobody ever has to say goodbye.',
+        'You will never be late again.', 'You will never be anything again.']
+    },
+    forever: {
+      title: 'Thursday Forever', music: 'twilight',
+      hint: 'Some friendships want the night to never end.',
+      blurb: 'You chose to stay on the roof with Mira while the world stood still.',
+      lines: ['You and Mira stay on the roof until the stars stop moving.', 'Midnight comes and does not take you. It just... forgets to.',
+        'Tomorrow cannot find you up here. Nobody can.', 'Somewhere below, a bell rings, very softly, for no one.', 'Some loops are kinder than endings. Some are not. You decide not to ask which one this is.']
+    },
+    dismissal: {
+      title: 'Early Dismissal', music: 'sublevel',
+      hint: 'The chalkboard told you not to trust it. What if you did it anyway, at the very last minute?',
+      blurb: 'You ended the day without understanding it. The school did not forgive you.',
+      lines: ['You throw the switch at 11:59.', 'The bell rings once, too early, and every clock in the building flinches.', 'In the morning there is no morning. The doors are open. The halls are empty. Even the dust is gone.',
+        'You walk out the front gate, and this time the fog lets you through.', 'Halloway is closed. Everyone went home.', 'You never find out whether "home" was somewhere they could still reach.']
+    },
+    graduation: { title: 'Graduation', future: true, blurb: 'Everyone the Stillwell kept walks out together.' },
+    keeper: { title: 'Keeper of Thursday', future: true, blurb: 'You take the Stillwell\'s place.' },
+    tomorrow: { title: 'Tomorrow', future: true, blurb: 'The loop ends. Halloway closes. Life goes on, painfully and properly.' },
+    eclipse: { title: 'Eclipse', future: true, blurb: 'A secret ending. Someone finally gets to see it.' }
+  };
+})(window.IS.data);
+
+</script>
+<script>/* data/music.js */
+// Soundtrack. Every theme is a variation on one four-note "Bell Motif"
+// (C-E-G-E), so the music itself loops the way the day does.
+// Tokens: note+octave (C5, F#4, Bb3), '.' rest, '-' hold. 8th-note steps.
+(function (D) {
+  D.music = {
+    title: { name: 'Thursday (Music Box)', bpm: 84, wave: 'triangle', leadVol: 0.2, bassWave: 'sine', bassVol: 0.22,
+      lead: 'E5 . B4 . G5 . F#5 . E5 . B4 . D5 . C5 . B4 - - . A4 . G4 . A4 . B4 - - .',
+      bass: 'E3 - - . B2 - - . C3 - - . G2 - - . A2 - - . E2 - - . A2 - - . B2 - - .' },
+    homeroom: { name: 'Homeroom Hum', bpm: 112, wave: 'square', leadVol: 0.13,
+      lead: 'C5 . E5 G5 . E5 D5 . C5 . A4 . G4 - - . F4 . A4 C5 . A4 G4 . E4 . G4 . C5 - - .',
+      bass: 'C3 . G2 . C3 . G2 . A2 . E2 . A2 . E2 . F2 . C3 . F2 . C3 . G2 . D3 . G2 . B2 .' },
+    hall: { name: 'Corridor Count', bpm: 100, wave: 'square', leadVol: 0.1,
+      lead: 'A4 . . C5 . . E5 . D5 . . C5 . . B4 . A4 . . C5 . . E5 . G5 . F5 . E5 - - .',
+      bass: 'A2 A2 . A2 E2 . A2 . F2 F2 . F2 C3 . F2 . D2 D2 . D2 A2 . D2 . E2 E2 . E2 B2 . E2 .' },
+    library: { name: 'Ink & Hush', bpm: 70, wave: 'triangle', leadVol: 0.16, bassWave: 'sine',
+      lead: 'D5 F5 A5 F5 C5 E5 G5 E5 Bb4 D5 F5 D5 A4 C#5 E5 . D5 F5 A5 F5 C5 E5 G5 C6 Bb5 A5 G5 F5 E5 - - .',
+      bass: 'D3 - - . C3 - - . Bb2 - - . A2 - - . D3 - - . C3 - - . Bb2 - - . A2 - - .' },
+    twilight: { name: 'Golden Hour Dismissal', bpm: 88, wave: 'triangle', leadVol: 0.18,
+      lead: 'D5 . . A4 . . F5 . E5 . D5 . C5 . A4 . Bb4 . . F4 . . D5 . C5 - - . A4 - - .',
+      bass: 'D3 . A2 . D3 . A2 . Bb2 . F2 . Bb2 . F2 . G2 . D3 . G2 . D3 . A2 . E3 . A2 . C#3 .' },
+    courtyard: { name: 'Courtyard Weather', bpm: 104, wave: 'square', leadVol: 0.11,
+      lead: 'G4 . B4 D5 . B4 . G4 . A4 . B4 - - . . E5 . D5 B4 . G4 . A4 - - . G4 - - .',
+      bass: 'G2 . D3 . G2 . D3 . E2 . B2 . E2 . B2 . C3 . G2 . C3 . G2 . D3 . A2 . D3 . F#2 .' },
+    night: { name: 'After Hours', bpm: 76, wave: 'triangle', leadVol: 0.16,
+      lead: 'C5 . Eb5 G5 . Eb5 D5 . C5 . Ab4 . G4 - - . F4 . Ab4 C5 . Ab4 G4 . Eb4 . G4 . C5 - - .',
+      bass: 'C3 . G2 . C3 . G2 . Ab2 . Eb2 . Ab2 . Eb2 . F2 . C3 . F2 . C3 . G2 . D3 . G2 . B2 .' },
+    anomaly: { name: 'Between E and G', bpm: 60, wave: 'sawtooth', leadVol: 0.06, bassWave: 'sine', bassVol: 0.25,
+      lead: 'C5 . . D5 . . E5 . . F#5 . . G#5 . . A#5 - - - . . G#5 . . E5 . . C5 - - - .',
+      bass: 'C2 - - - - - - . F#2 - - - - - - .' },
+    sublevel: { name: 'The Stillwell', bpm: 50, wave: 'sine', leadVol: 0.12, bassWave: 'sawtooth', bassVol: 0.1,
+      lead: 'B4 . . . . . . . C5 . . . . . . . E5 . . . G4 . . . B4 - - - - - - .',
+      bass: 'E1 - - - - - - - F1 - - - - - - -' }
+  };
+})(window.IS.data);
+
+</script>
+<!-- boot -->
+<script>/* src/main.js */
+// Boot + main loop. Renders the world into a 320x180 low-res buffer, scales
+// it up with crisp pixels, then draws the UI at full resolution on top.
+(function (IS) {
+  const main = document.getElementById('game');
+  const mctx = main.getContext('2d');
+  const lo = document.createElement('canvas'); lo.width = IS.W; lo.height = IS.H;
+  const lctx = lo.getContext('2d');
+  let scale = 1, ox = 0, oy = 0, dpr = 1;
+
+  function resize() {
+    dpr = window.devicePixelRatio || 1;
+    const w = main.clientWidth, h = main.clientHeight;
+    main.width = Math.round(w * dpr); main.height = Math.round(h * dpr);
+    let s = Math.min(main.width / IS.W, main.height / IS.H);
+    if (s >= 2) s = Math.floor(s);
+    scale = s; ox = Math.round((main.width - IS.W * s) / 2); oy = Math.round((main.height - IS.H * s) / 2);
+  }
+  addEventListener('resize', resize);
+
+  IS.applyTouch = function () {
+    const el = document.getElementById('touch');
+    const t = IS.settings.touch;
+    const auto = matchMedia('(pointer: coarse)').matches;
+    el.hidden = t === 2 || (t === 0 && !auto);
+  };
+
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min(0.05, (now - last) / 1000); last = now;
+    IS.I.update(dt);
+    const top = IS.top();
+    if (top && top.update) top.update(dt);
+    // the world keeps its effects alive under overlays
+    const w = IS.stack[0];
+    if (w instanceof IS.UI.WorldScene && top !== w) { IS.Wd.t += dt; if (IS.Wd.fade > 0) IS.Wd.fade = Math.max(0, IS.Wd.fade - dt * 3); }
+    draw(dt);
+    requestAnimationFrame(frame);
+  }
+
+  function draw(dt) {
+    lctx.setTransform(1, 0, 0, 1, 0, 0);
+    lctx.fillStyle = '#000'; lctx.fillRect(0, 0, IS.W, IS.H);
+    for (const s of IS.stack) if (s.drawLo) s.drawLo(lctx);
+    if (IS.S && IS.stack[0] instanceof IS.UI.WorldScene) IS.Wd.postGlitch(lo, lctx, IS.Wd.glitch);
+
+    mctx.setTransform(1, 0, 0, 1, 0, 0);
+    mctx.fillStyle = '#05040a'; mctx.fillRect(0, 0, main.width, main.height);
+    mctx.imageSmoothingEnabled = false;
+    mctx.drawImage(lo, ox, oy, IS.W * scale, IS.H * scale);
+    if (IS.settings.crt) {
+      mctx.fillStyle = 'rgba(0,0,0,0.22)';
+      const step = Math.max(2, Math.round(scale));
+      for (let y = oy; y < oy + IS.H * scale; y += step) mctx.fillRect(ox, y, IS.W * scale, Math.max(1, step / 2));
+    }
+    mctx.setTransform(scale, 0, 0, scale, ox, oy);
+    for (const s of IS.stack) if (s.drawUI) s.drawUI(mctx);
+    IS.UI.drawToasts(mctx, dt);
+  }
+
+  function boot() {
+    try { IS.fontFallback = ![...document.fonts].some((f) => f.family.replace(/["']/g, '') === 'VT323' && f.status === 'loaded'); } catch (e) { IS.fontFallback = true; }
+    resize();
+    IS.applyTouch();
+    IS.I.bindTouch(document.getElementById('touch'));
+    IS.push(new IS.UI.TitleScene());
+    requestAnimationFrame(frame);
+  }
+  if (document.fonts && document.fonts.ready) {
+    let booted = false;
+    const go = () => { if (!booted) { booted = true; boot(); } };
+    document.fonts.load('12px VT323').then(go, go);
+    setTimeout(go, 1500);
+  } else boot();
+
+  // debug hook for automated tests
+  IS.debug = { canvas: main, lo };
+})(window.IS);
+
+</script>
+</body>
+</html>
